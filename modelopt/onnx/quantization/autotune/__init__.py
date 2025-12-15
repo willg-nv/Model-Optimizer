@@ -91,6 +91,12 @@ Benchmarking:
     - RegionPattern: Pattern matching and signature computation
 """
 
+# Autotuner classes
+from .autotuner import QDQAutotuner, QDQAutotunerBase
+
+# Benchmark classes
+from .benchmark import Benchmark, TensorRTPyBenchmark, TrtExecBenchmark
+
 # Core data structures
 from .common import (
     AutotunerError,
@@ -124,21 +130,28 @@ __all__ = [
     # Exceptions
     "AutotunerError",
     "AutotunerNotInitializedError",
-    "ChildRegionInputInsertionPoint",
-    "CombinedRegionSearch",
+    # Benchmark classes
+    "Benchmark",
+    "TensorRTPyBenchmark",
+    "TrtExecBenchmark",
     # Configuration and state
     "Config",
     # Q/DQ insertion
     "InsertionScheme",
     "InvalidSchemeError",
     "NodeInputInsertionPoint",
+    "ChildRegionInputInsertionPoint",
+    "RegionOutputInsertionPoint",
     "ResolvedInsertionPoint",
-    "PatternCache",
-    "PatternSchemes",
+    # Main autotuner classes
+    "QDQAutotuner",
+    "QDQAutotunerBase",
     # Region classes
     "Region",
     "RegionError",
-    "RegionOutputInsertionPoint",
     "RegionPattern",
     "RegionType",
+    "PatternCache",
+    "PatternSchemes",
+    "CombinedRegionSearch",
 ]
