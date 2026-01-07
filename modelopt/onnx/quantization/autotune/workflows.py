@@ -73,6 +73,7 @@ optimization of ONNX models using pattern-based region analysis and TensorRT per
 
 import fnmatch
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import onnx
@@ -163,7 +164,7 @@ def init_benchmark_instance(
     use_trtexec: bool = False,
     plugin_libraries: list[str] | None = None,
     timing_cache_file: str | None = None,
-    warmup_runs: int = 5,
+    warmup_runs: int = 10,
     timing_runs: int = 20,
 ):
     """Initialize global TensorRT benchmark instance for model performance measurement.
@@ -266,13 +267,14 @@ def _region_matches_filter(region, graph, filter_patterns: list[str]) -> bool:
 def region_pattern_autotuning_workflow(
     model_path: str,
     output_dir: Path,
-    num_schemes_per_region: int = 30,
+    num_schemes_per_region: int = 50,
     pattern_cache_file: str | None = None,
     state_file: str | None = None,
     quant_type: str = "int8",
     default_dq_dtype: str = "float32",
     qdq_baseline_model: str | None = None,
     node_filter_list: list[str] | None = None,
+    verbose: bool = False,
 ) -> QDQAutotuner:
     """Run automated Q/DQ (Quantization/Dequantization) optimization on an ONNX model.
 
@@ -335,7 +337,7 @@ def region_pattern_autotuning_workflow(
         model_path: Path to ONNX model file to optimize
         output_dir: Directory for output files (state, logs, models). Created if doesn't exist.
         num_schemes_per_region: Number of Q/DQ insertion schemes to test per region pattern.
-                               Higher values explore more configurations but take longer (default: 30)
+                               Higher values explore more configurations but take longer (default: 50)
         pattern_cache_file: Optional path to pattern cache YAML file containing known-good schemes
                            from previous runs. Enables warm-start optimization (default: None)
         state_file: Optional path to state file for checkpoint/resume. If None, automatically
@@ -380,9 +382,10 @@ def region_pattern_autotuning_workflow(
     models_dir = output_dir / "region_models"
     models_dir.mkdir(exist_ok=True)
 
-    # Determine state file path
+    # Determine state file path (auto-resume if exists)
     if state_file is None:
         state_file = str(output_dir / "autotuner_state.yaml")
+        logger.debug(f"Using default state file: {state_file}")
     state_path = Path(state_file)
 
     # Load model
@@ -410,35 +413,35 @@ def region_pattern_autotuning_workflow(
         default_quant_type=quant_type,
         default_dq_dtype=default_dq_dtype,
         performance_threshold=1.01,  # Accept ≥1% improvement
-        verbose=True,
+        verbose=verbose,
     )
 
     autotuner = QDQAutotuner(model)
     autotuner.initialize(config, pattern_cache)
 
-    # Load previous state if exists (resume capability)
+    # Auto-resume: load previous state if exists
     if state_path.exists():
-        logger.info(f"Resuming from checkpoint: {state_path}")
+        logger.info(f"Found existing state file, resuming from checkpoint: {state_path}")
         autotuner.load_state(str(state_path))
     else:
-        logger.info("Starting new autotuning session")
+        logger.info("No existing state file found, starting new autotuning session")
 
-    # Import quantization patterns from QDQ baseline model if provided
+    # Import Q/DQ insertion points from baseline model if provided
     if qdq_baseline_model:
         qdq_baseline_path = Path(qdq_baseline_model)
         if qdq_baseline_path.exists():
-            logger.info(f"Importing patterns from QDQ baseline: {qdq_baseline_model}")
+            logger.info(f"Importing Q/DQ insertion points from: {qdq_baseline_model}")
             qdq_model = onnx.load(str(qdq_baseline_path))
 
             # Extract quantized tensors from baseline model
             quantized_tensors = get_quantized_tensors(qdq_model)
-            logger.debug(f"Found {len(quantized_tensors)} quantized tensors in baseline")
+            logger.info(f"Found {len(quantized_tensors)} quantized tensors in PTQ model")
 
-            # Import insertion points into pattern cache
+            # Import insertion points into autotuner for warm-start
             autotuner.import_insertion_points(quantized_tensors)
-            logger.info("Pattern import complete")
+            logger.info("Q/DQ insertion points imported successfully")
         else:
-            logger.warning(f"QDQ baseline not found: {qdq_baseline_model}")
+            logger.warning(f"QDQ baseline model not found: {qdq_baseline_model}")
 
     # Get discovered regions
     regions = autotuner.regions
@@ -565,3 +568,369 @@ def region_pattern_autotuning_workflow(
     logger.debug(f"  Region models: {models_dir}")
 
     return autotuner
+
+
+# =============================================================================
+# Quantize Integration Workflow
+# =============================================================================
+
+
+# Autotune mode presets with hyperparameters
+# Each mode varies num_schemes_per_region and timing_runs
+# warmup_runs is fixed at 10 across all modes
+# Note: "none" mode is not included as autotune is disabled in that case
+AUTOTUNE_MODE_PRESETS: dict[str, dict[str, int]] = {
+    "fast": {
+        "num_schemes_per_region": 20,
+        "warmup_runs": 10,
+        "timing_runs": 10,
+    },
+    "default": {
+        "num_schemes_per_region": 50,
+        "warmup_runs": 10,
+        "timing_runs": 20,
+    },
+    "best": {
+        "num_schemes_per_region": 100,
+        "warmup_runs": 10,
+        "timing_runs": 50,
+    },
+    "extreme": {
+        "num_schemes_per_region": 200,
+        "warmup_runs": 10,
+        "timing_runs": 100,
+    },
+}
+
+
+@dataclass
+class QDQAutotunerWorkflow:
+    """Autotuner workflow for quantize() integration.
+
+    Collects relevant arguments from quantize() and provides the `run()` method
+    to execute autotuning. This is distinct from the `Config` class in `common.py`
+    which controls autotuner internal behavior, and `QDQAutotuner` which is the
+    core autotuning engine.
+
+    **Autotune Modes:**
+    - 'none': Disabled, no autotuning
+    - 'fast': Quick search (20 schemes/region, 10 timing runs)
+    - 'default': Balanced search (50 schemes/region, 20 timing runs)
+    - 'best': Thorough search (100 schemes/region, 50 timing runs)
+    - 'extreme': Exhaustive search (200 schemes/region, 100 timing runs)
+
+    **Execution Modes:**
+    - autotune != 'none' and not direct_autotune: Run autotune after PTQ
+    - direct_autotune=True: Skip PTQ and run autotune directly (uses autotune mode)
+
+    Attributes:
+        # Core paths
+        input_model_path: Path to input ONNX model (high precision)
+        output_path: Path to save final optimized model
+        output_dir: Directory for autotune working files (state, logs, models)
+
+        # Autotune mode
+        autotune: Autotune mode ('none', 'fast', 'default', 'best', 'extreme')
+        direct_autotune: If True, skip PTQ and run autotune directly
+
+        # Quantization settings (from quantize())
+        quantize_mode: Quantization mode ('int8', 'fp8', 'int4')
+        high_precision_dtype: High precision dtype ('fp32', 'fp16', 'bf16')
+        trt_plugins: List of TensorRT plugin library paths
+
+        # Autotune-specific settings (derived from mode or overridden)
+        num_schemes_per_region: Number of schemes to test per region
+        pattern_cache_file: Path to pattern cache for warm-start
+        state_file: Path to state file for checkpoint/resume
+        warmup_runs: TensorRT benchmark warmup iterations
+        timing_runs: TensorRT benchmark timing iterations
+        performance_threshold: Minimum speedup ratio to accept a scheme
+        use_trtexec: Use trtexec instead of TensorRT Python API (default: False)
+    """
+
+    # Core paths
+    input_model_path: str
+    output_path: str
+    output_dir: str | None = None
+
+    # Autotune mode
+    autotune: str = "none"  # 'none', 'fast', 'default', 'best', 'extreme'
+    direct_autotune: bool = False  # If True, skip PTQ and run autotune directly
+
+    # Quantization settings
+    quantize_mode: str = "int8"
+    high_precision_dtype: str = "fp16"
+    trt_plugins: list[str] | None = None
+
+    # Autotune-specific settings (can be overridden or derived from mode)
+    num_schemes_per_region: int | None = None
+    pattern_cache_file: str | None = None
+    state_file: str | None = None
+    warmup_runs: int | None = None
+    timing_runs: int | None = None
+    performance_threshold: float | None = None
+    use_trtexec: bool = False
+    node_filter_list: list[str] | None = None  # Wildcard patterns to filter nodes
+    verbose: bool = False  # Enable verbose DEBUG logging
+
+    def __post_init__(self):
+        """Apply mode presets for any unset hyperparameters."""
+        mode = self.autotune
+        if mode in AUTOTUNE_MODE_PRESETS:
+            preset = AUTOTUNE_MODE_PRESETS[mode]
+            if self.num_schemes_per_region is None:
+                self.num_schemes_per_region = preset["num_schemes_per_region"]
+            if self.warmup_runs is None:
+                self.warmup_runs = preset["warmup_runs"]
+            if self.timing_runs is None:
+                self.timing_runs = preset["timing_runs"]
+        else:
+            # Fallback to default preset values
+            if self.num_schemes_per_region is None:
+                self.num_schemes_per_region = 50
+            if self.warmup_runs is None:
+                self.warmup_runs = 10
+            if self.timing_runs is None:
+                self.timing_runs = 20
+        # performance_threshold is fixed at 1.02
+        if self.performance_threshold is None:
+            self.performance_threshold = 1.02
+
+    @classmethod
+    def from_quantize_args(
+        cls,
+        onnx_path: str,
+        output_path: str | None = None,
+        quantize_mode: str = "int8",
+        high_precision_dtype: str = "fp16",
+        trt_plugins: list[str] | None = None,
+        autotune: str = "none",
+        direct_autotune: bool = False,
+        log_level: str = "INFO",
+        **kwargs,
+    ) -> "QDQAutotunerWorkflow":
+        """Create QDQAutotunerWorkflow from quantize() arguments.
+
+        Args:
+            onnx_path: Path to input ONNX model
+            output_path: Path to save quantized model
+            quantize_mode: Quantization mode ('int8', 'fp8', 'int4')
+            high_precision_dtype: High precision dtype
+            trt_plugins: TensorRT plugin library paths
+            autotune: Autotune mode ('none', 'fast', 'default', 'best', 'extreme')
+            direct_autotune: If True, skip PTQ and run autotune directly
+            log_level: Log level ('DEBUG', 'INFO', etc.). 'DEBUG' enables verbose autotuning.
+            **kwargs: Additional autotune-specific arguments for overriding presets:
+                - autotune_num_schemes: Override num_schemes_per_region
+                - autotune_warmup_runs: Override warmup_runs
+                - autotune_timing_runs: Override timing_runs
+                - autotune_performance_threshold: Override performance_threshold
+                - autotune_pattern_cache: Path to pattern cache file
+                - autotune_state_file: Path to state file
+                - autotune_use_trtexec: Use trtexec instead of Python API
+                - autotune_node_filter: List of wildcard patterns to filter nodes
+
+        Returns:
+            Configured QDQAutotunerWorkflow instance with mode-appropriate hyperparameters
+        """
+        # Determine output directory
+        if output_path:
+            output_dir = str(Path(output_path).parent / "autotune")
+        else:
+            output_dir = str(Path(onnx_path).parent / "autotune")
+
+        # Enable verbose mode if log_level is DEBUG
+        verbose = log_level.upper() == "DEBUG"
+
+        return cls(
+            input_model_path=onnx_path,
+            output_path=output_path or onnx_path.replace(".onnx", ".quant.onnx"),
+            output_dir=output_dir,
+            autotune=autotune,
+            direct_autotune=direct_autotune,
+            quantize_mode=quantize_mode,
+            high_precision_dtype=high_precision_dtype,
+            trt_plugins=trt_plugins,
+            # These can override mode presets if provided
+            num_schemes_per_region=kwargs.get("autotune_num_schemes"),
+            pattern_cache_file=kwargs.get("autotune_pattern_cache"),
+            state_file=kwargs.get("autotune_state_file"),
+            warmup_runs=kwargs.get("autotune_warmup_runs"),
+            timing_runs=kwargs.get("autotune_timing_runs"),
+            performance_threshold=kwargs.get("autotune_performance_threshold"),
+            use_trtexec=kwargs.get("autotune_use_trtexec", False),
+            node_filter_list=kwargs.get("autotune_node_filter"),
+            verbose=verbose,
+        )
+
+    @property
+    def should_run_autotune(self) -> bool:
+        """Check if autotune should be executed."""
+        return self.autotune != "none"
+
+    @property
+    def quant_type(self) -> str:
+        """Get quantization type for autotune (int8 or fp8)."""
+        if self.quantize_mode in ["int8", "fp8"]:
+            return self.quantize_mode
+        # Default to int8 for other modes like int4
+        return "int8"
+
+    @property
+    def default_dq_dtype(self) -> str:
+        """Get default DQ output dtype based on high precision dtype."""
+        dtype_map = {"fp32": "float32", "fp16": "float16", "bf16": "bfloat16"}
+        return dtype_map.get(self.high_precision_dtype, "float32")
+
+    def run(self, quantized_model_path: str | None = None) -> str | None:
+        """Run autotune workflow.
+
+        This method integrates autotuning into the quantize() workflow. It supports
+        two execution modes controlled by the autotune/direct_autotune settings:
+
+        **Autotune Modes ('none', 'fast', 'default', 'best', 'extreme'):**
+        - 'none': Disabled
+        - 'fast': Quick search (20 schemes/region, 10 timing runs)
+        - 'default': Balanced search (50 schemes/region, 20 timing runs)
+        - 'best': Thorough search (100 schemes/region, 50 timing runs)
+        - 'extreme': Exhaustive search (200 schemes/region, 100 timing runs)
+
+        **Execution Mode 1: Post-PTQ Autotune (autotune != 'none', direct_autotune=False)**
+        - Requires quantized_model_path from PTQ
+        - Uses quantized model as baseline for pattern import
+        - Optimizes Q/DQ placement starting from PTQ result
+
+        **Execution Mode 2: Direct Autotune (direct_autotune=True)**
+        - Runs autotune directly on high precision input model
+        - Skips PTQ step entirely
+        - Discovers optimal Q/DQ placement from scratch
+
+        Args:
+            quantized_model_path: Path to PTQ-quantized model (required if not direct_autotune)
+
+        Returns:
+            Path to the final optimized model, or None if autotune was skipped/failed
+
+        Example:
+            >>> # Post-PTQ autotune with default mode
+            >>> workflow = QDQAutotunerWorkflow.from_quantize_args(
+            ...     onnx_path="model.onnx", autotune="default", quantize_mode="int8"
+            ... )
+            >>> optimized_path = workflow.run(quantized_model_path="model.quant.onnx")
+
+            >>> # Direct autotune with fast mode (skip PTQ)
+            >>> workflow = QDQAutotunerWorkflow.from_quantize_args(
+            ...     onnx_path="model.onnx",
+            ...     autotune="fast",
+            ...     direct_autotune=True,
+            ...     quantize_mode="int8",
+            ... )
+            >>> optimized_path = workflow.run()
+        """
+        if not self.should_run_autotune:
+            logger.debug("Autotune not enabled (mode='none'), skipping")
+            return None
+
+        # Validate parameters
+        if not self.direct_autotune:
+            if not quantized_model_path:
+                logger.error(f"autotune='{self.autotune}' requires quantized_model_path from PTQ")
+                return None
+
+        # Log mode and hyperparameters
+        mode = self.autotune
+        logger.info(
+            f"Autotune mode: '{mode}' "
+            f"(schemes={self.num_schemes_per_region}, "
+            f"warmup={self.warmup_runs}, timing={self.timing_runs})"
+        )
+
+        # Determine which model to use as input
+        if self.direct_autotune:
+            # Direct autotune: use high precision input model
+            model_path = self.input_model_path
+            qdq_baseline = None
+            logger.info("Running direct autotune on high precision model (skipping PTQ)")
+        else:
+            # Post-PTQ autotune: use high precision model, import Q/DQ points from quantized
+            model_path = self.input_model_path
+            qdq_baseline = quantized_model_path
+            logger.info(
+                f"Running autotune after PTQ, importing Q/DQ insertion points from: "
+                f"{quantized_model_path}"
+            )
+
+        # Setup output directory
+        output_dir = (
+            Path(self.output_dir) if self.output_dir else Path(model_path).parent / "autotune"
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Initialize TensorRT benchmark
+        timing_cache = str(output_dir / "trt_timing.cache")
+        # These are guaranteed to be set by __post_init__, assert for mypy
+        assert self.warmup_runs is not None
+        assert self.timing_runs is not None
+        assert self.num_schemes_per_region is not None
+        benchmark = init_benchmark_instance(
+            use_trtexec=self.use_trtexec,
+            plugin_libraries=self.trt_plugins,
+            timing_cache_file=timing_cache,
+            warmup_runs=self.warmup_runs,
+            timing_runs=self.timing_runs,
+        )
+
+        if benchmark is None:
+            logger.error("Failed to initialize TensorRT benchmark, skipping autotune")
+            return None
+
+        try:
+            # Run the autotuning workflow
+            region_pattern_autotuning_workflow(
+                model_path=model_path,
+                output_dir=output_dir,
+                num_schemes_per_region=self.num_schemes_per_region,
+                pattern_cache_file=self.pattern_cache_file,
+                state_file=self.state_file,
+                quant_type=self.quant_type,
+                default_dq_dtype=self.default_dq_dtype,
+                qdq_baseline_model=qdq_baseline,
+                node_filter_list=self.node_filter_list,
+                verbose=self.verbose,
+            )
+
+            # Get final optimized model path
+            final_model_path = output_dir / "optimized_final.onnx"
+
+            if final_model_path.exists():
+                # Determine destination path
+                # For post-PTQ autotune, don't overwrite the PTQ model - use .autotune.onnx
+                if self.output_path and not self.direct_autotune:
+                    # Create autotune-specific output path (e.g., model.quant.onnx -> model.autotune.onnx)
+                    dest_path = self.output_path.replace(".quant.onnx", ".autotune.onnx")
+                    if dest_path == self.output_path:
+                        # Fallback if no .quant.onnx suffix
+                        dest_path = self.output_path.replace(".onnx", ".autotune.onnx")
+                elif self.output_path:
+                    # Direct autotune: use the specified output path
+                    dest_path = self.output_path
+                else:
+                    # No output path specified, keep in autotune directory
+                    dest_path = str(final_model_path)
+
+                # Copy to destination if different from source
+                if dest_path != str(final_model_path):
+                    import shutil
+
+                    shutil.copy(str(final_model_path), dest_path)
+
+                mode_desc = "Direct autotune" if self.direct_autotune else "Post-PTQ autotune"
+                logger.info(f"{mode_desc} completed successfully: {dest_path}")
+                return dest_path
+            else:
+                logger.warning("Autotune completed but no final model found")
+                return None
+
+        except Exception as e:
+            logger.error(f"Autotune workflow failed: {e}", exc_info=True)
+            return None

@@ -45,6 +45,7 @@ import onnxslim
 
 from modelopt.onnx.logging_config import configure_logging, logger
 from modelopt.onnx.op_types import is_data_dependent_shape_op
+from modelopt.onnx.quantization.autotune.workflows import QDQAutotunerWorkflow
 from modelopt.onnx.quantization.calib_utils import (
     CalibrationDataProvider,
     CalibrationDataType,
@@ -365,6 +366,22 @@ def quantize(
     logger.info(f"Starting quantization process for model: {onnx_path}")
     logger.info(f"Quantization mode: {quantize_mode}")
 
+    # Create autotuner workflow from quantize args
+    autotuner = QDQAutotunerWorkflow.from_quantize_args(
+        onnx_path=onnx_path,
+        output_path=output_path,
+        quantize_mode=quantize_mode,
+        high_precision_dtype=high_precision_dtype,
+        trt_plugins=trt_plugins,
+        log_level=log_level,
+        **kwargs,
+    )
+
+    # Check if we should skip PTQ for direct autotune
+    if autotuner.direct_autotune:
+        autotuner.run()
+        return
+
     if calibrate_per_node and quantize_mode not in ["int8", "fp8"]:
         raise ValueError(
             "Per node calibration is only supported for int8 and fp8 quantization modes"
@@ -540,5 +557,9 @@ def quantize(
     except C.ValidationError as e:
         logger.warning("ONNX model checker failed, check your deployment status")
         logger.warning(e)
+
+    # Run post-PTQ autotune if enabled
+    if autotuner.should_run_autotune:
+        autotuner.run(quantized_model_path=output_path)
 
     logger.info("Quantization process completed")

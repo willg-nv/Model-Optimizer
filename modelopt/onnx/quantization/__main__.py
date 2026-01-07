@@ -255,6 +255,58 @@ def get_parser() -> argparse.ArgumentParser:
             "The currently supported precisions are {fp16, int8, fp8}."
         ),
     )
+    argparser.add_argument(
+        "--autotune",
+        type=str,
+        choices=["none", "fast", "default", "best", "extreme"],
+        default="none",
+        help=(
+            "Autotune mode for Q/DQ insertion optimization after PTQ. "
+            "Choices: 'none' (disabled), 'fast' (quick search, fewer schemes), "
+            "'default' (balanced search), 'best' (thorough search, more schemes). "
+            "Autotune searches for optimal Q/DQ placement patterns to improve model performance."
+        ),
+    )
+    argparser.add_argument(
+        "--direct_autotune",
+        action="store_true",
+        help=(
+            "Skip PTQ and run autotuning directly on the input model. "
+            "The autotune mode is taken from --autotune. "
+            "This skips the standard quantization step and goes straight to autotune optimization."
+        ),
+    )
+    argparser.add_argument(
+        "--autotune_benchmark",
+        type=str,
+        choices=["python", "trtexec"],
+        default="python",
+        help=(
+            "Benchmark method for autotuning. "
+            "'python' uses TensorRT Python API (default), "
+            "'trtexec' uses the trtexec command-line tool."
+        ),
+    )
+    argparser.add_argument(
+        "--autotune_pattern_cache",
+        type=str,
+        default=None,
+        help=(
+            "Path to pattern cache YAML file for autotuning warm-start. "
+            "If provided, known-good Q/DQ schemes from previous runs will be loaded "
+            "to accelerate optimization."
+        ),
+    )
+    argparser.add_argument(
+        "--autotune_node_filter",
+        type=str,
+        default=None,
+        help=(
+            "Path to a text file containing wildcard patterns to filter nodes for autotuning. "
+            "Each line in the file should contain one pattern. "
+            "Only regions containing nodes matching these patterns will be optimized."
+        ),
+    )
     return argparser
 
 
@@ -267,6 +319,14 @@ def main():
         if args.calibration_data_path.endswith(".npz"):
             # Convert the NpzFile object to a Python dictionary
             calibration_data = {key: calibration_data[key] for key in calibration_data.files}
+
+    # Load node filter patterns from file if provided
+    node_filter_list = None
+    if args.autotune_node_filter:
+        with open(args.autotune_node_filter) as f:
+            node_filter_list = [
+                line.strip() for line in f if line.strip() and not line.startswith("#")
+            ]
 
     quantize(
         args.onnx_path,
@@ -298,6 +358,11 @@ def main():
         simplify=args.simplify,
         calibrate_per_node=args.calibrate_per_node,
         direct_io_types=args.direct_io_types,
+        autotune=args.autotune,
+        direct_autotune=args.direct_autotune,
+        autotune_use_trtexec=(args.autotune_benchmark == "trtexec"),
+        autotune_pattern_cache=args.autotune_pattern_cache,
+        autotune_node_filter=node_filter_list,
     )
 
 
