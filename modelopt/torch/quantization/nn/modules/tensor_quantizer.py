@@ -53,7 +53,12 @@ from ...qtensor import (
     NVFP4QTensor,
     QTensorWrapper,
 )
-from ...tensor_quant import dynamic_block_quant, fake_tensor_quant, scaled_e4m3
+from ...tensor_quant import (
+    dynamic_block_quant,
+    fake_tensor_quant,
+    scaled_e4m3,
+    static_blockwise_fp4_fake_quant,
+)
 from ...utils import is_torch_export_mode
 from ..functional import normalized_hadamard_transform
 
@@ -486,6 +491,29 @@ class TensorQuantizer(nn.Module):
             and self.block_sizes.get("scale_bits", None) == (8, 0)
         )
 
+    def is_mxfp(self, bits):
+        """Check if is MXFP4/MXFP6/MXFP8."""
+        if bits == 4:
+            return (
+                self.is_mx_format
+                and self.num_bits == (2, 1)
+                and self.block_sizes.get(-1, None) == 32
+            )
+        elif bits == 6:
+            return (
+                self.is_mx_format
+                and self.num_bits == (3, 2)
+                and self.block_sizes.get(-1, None) == 32
+            )
+        elif bits == 8:
+            return (
+                self.is_mx_format
+                and self.num_bits == (4, 3)
+                and self.block_sizes.get(-1, None) == 32
+            )
+        else:
+            raise NotImplementedError()
+
     @property
     def is_static_block_quant(self):
         """Check if is static block quantization."""
@@ -721,6 +749,15 @@ class TensorQuantizer(nn.Module):
                 getattr(self, "_trt_high_precision_dtype", None),
                 getattr(self, "_onnx_quantizer_type", None),
                 self._pass_through_bwd,
+            )
+        elif self._num_bits == (2, 1) and self.is_static_block_quant:
+            outputs = static_blockwise_fp4_fake_quant(
+                inputs,
+                amax / 6.0,
+                None,  # scale_fp8_quant_amax
+                False,  # skip_scale_quant
+                inputs.dtype,  # out_dtype
+                self._pass_through_bwd,  # pass_through_bwd
             )
         elif isinstance(self._num_bits, tuple):
             # Float-point quantization, e.g., FP8
