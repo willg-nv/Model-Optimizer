@@ -96,7 +96,7 @@ def is_fusible_scaling_op(op_type: str):
     ]
 
 
-def get_copy_ops():
+def get_copy_ops() -> list[str]:
     """Returns list of copy operators."""
     return [
         "Flatten",

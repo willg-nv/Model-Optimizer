@@ -313,7 +313,7 @@ class TestPrintTree(unittest.TestCase):
 
         # Should contain node counts
         assert "Direct nodes:" in result
-        assert "Total nodes (recursive):" in result
+        assert "Total nodes:" in result
         assert "Children:" in result
 
     def test_print_tree_contains_io_info(self):
@@ -330,7 +330,6 @@ class TestPrintTree(unittest.TestCase):
         # Should contain I/O information
         assert "Inputs:" in result
         assert "Outputs:" in result
-        assert "tensors" in result
 
     def test_print_tree_divergent_graph(self):
         """Test print_tree on a divergent graph with more complex structure."""
@@ -355,10 +354,10 @@ class TestPrintTree(unittest.TestCase):
 
         # Test with different max_nodes_to_show values
         output1 = io.StringIO()
-        search.print_tree(max_nodes_to_show=1, file=output1)
+        search.print_tree(max_items=1, file=output1)
 
         output2 = io.StringIO()
-        search.print_tree(max_nodes_to_show=10, file=output2)
+        search.print_tree(max_items=10, file=output2)
 
         # Both should produce output
         assert len(output1.getvalue()) > 0

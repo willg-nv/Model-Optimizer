@@ -315,7 +315,8 @@ def get_tensor_consumer_node_indices(graph: onnx.GraphProto | gs.Graph) -> dict[
     for node_idx, node in enumerate(nodes):
         inputs = node.inputs if isinstance(node, gs.Node) else node.input
         for tensor in inputs:
-            tensor_consumer_map[tensor.name].append(node_idx)
+            tensor_name = tensor.name if isinstance(tensor, gs.Tensor) else tensor
+            tensor_consumer_map[tensor_name].append(node_idx)
     return tensor_consumer_map
 
 

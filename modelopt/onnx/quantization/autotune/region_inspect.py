@@ -89,9 +89,11 @@ def inspect_region_search(
     logger.info("Analyzing region structure")
     all_regions = []
     for i, region in enumerate(regions):
-        for child in region.get_children():
-            if not include_all_regions and not has_quantizable_operations(child, graph):
-                region.remove_child(child)
+        region.children = [
+            c
+            for c in region.get_children()
+            if include_all_regions or has_quantizable_operations(c, graph)
+        ]
         if not include_all_regions and not has_quantizable_operations(region, graph):
             logger.debug(f"Filtered out region {i} (no quantizable operations)")
             continue
@@ -139,7 +141,7 @@ def inspect_region_search(
             bar = "█" * min(count, 50)
             logger.debug(f"  {size:4d} nodes: {bar} ({count} regions)")
 
-    return regions
+    return all_regions
 
 
 def main():
