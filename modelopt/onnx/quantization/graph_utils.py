@@ -307,27 +307,20 @@ def get_tensor_consumer_node_indices(graph: onnx.GraphProto | gs.Graph) -> dict[
 
     Args:
         graph: ONNX GraphSurgeon graph to analyze
-
     Returns:
         Dictionary mapping tensor names to lists of node indices that consume them
     """
     tensor_consumer_map: dict[str, list[int]] = defaultdict(list)
-
-    if isinstance(graph, gs.Graph):
-        for node_idx, node in enumerate(graph.nodes):
-            for t in node.inputs:
-                name = getattr(t, "name", None)
-                if not name:
-                    continue
-                tensor_consumer_map[name].append(node_idx)
-        return tensor_consumer_map
-
-    # onnx.GraphProto case: node.input is repeated string
-    for node_idx, node in enumerate(graph.node):
-        for input_name in node.input:
-            if not input_name:
-                continue
-            tensor_consumer_map[input_name].append(node_idx)
+    nodes = graph.nodes if isinstance(graph, gs.Graph) else graph.node
+    for node_idx, node in enumerate(nodes):
+        inputs = node.inputs if isinstance(node, gs.Node) else node.input
+        for tensor in inputs:
+            tensor_name = tensor
+            if isinstance(tensor, str):
+                tensor_name = tensor
+            elif hasattr(tensor, "name") and isinstance(tensor.name, str):
+                tensor_name = tensor.name
+            tensor_consumer_map[tensor_name].append(node_idx)
     return tensor_consumer_map
 
 
