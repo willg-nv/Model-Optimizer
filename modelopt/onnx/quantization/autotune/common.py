@@ -558,7 +558,7 @@ class PatternCache:
             for scheme in sorted_schemes:
                 # Check if this scheme is too similar to any already-filtered scheme
                 too_similar = False
-                scheme_to_replace = []
+                schemes_to_replace = []
                 for existing_scheme in filtered_schemes:
                     distance = scheme.distance(existing_scheme)
                     if distance < self.minimum_distance:
@@ -566,13 +566,13 @@ class PatternCache:
                         too_similar = True
                         if scheme.latency_ms < existing_scheme.latency_ms:
                             # New scheme is better, mark existing for replacement
-                            scheme_to_replace.append(existing_scheme)
+                            schemes_to_replace.append(existing_scheme)
 
                 if not too_similar:
                     filtered_schemes.append(scheme)
-                elif scheme_to_replace:
-                    for scheme_to_replace in scheme_to_replace:
-                        filtered_schemes.remove(scheme_to_replace)
+                elif schemes_to_replace:
+                    for scheme in schemes_to_replace:
+                        filtered_schemes.remove(scheme)
                     filtered_schemes.append(scheme)
 
             sorted_schemes = filtered_schemes
