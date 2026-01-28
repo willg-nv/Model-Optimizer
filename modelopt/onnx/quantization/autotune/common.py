@@ -571,8 +571,8 @@ class PatternCache:
                 if not too_similar:
                     filtered_schemes.append(scheme)
                 elif schemes_to_replace:
-                    for scheme in schemes_to_replace:
-                        filtered_schemes.remove(scheme)
+                    for scheme_to_replace in schemes_to_replace:
+                        filtered_schemes.remove(scheme_to_replace)
                     filtered_schemes.append(scheme)
 
             sorted_schemes = filtered_schemes
