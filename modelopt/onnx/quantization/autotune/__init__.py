@@ -22,14 +22,12 @@ region analysis to efficiently explore and optimize Q/DQ insertion strategies.
 
 # Core data structures
 from .autotuner import QDQAutotuner
+from .benchmark import TensorRTPyBenchmark, TrtExecBenchmark
 from .common import (
     AutotunerError,
     AutotunerNotInitializedError,
-    Config,
     InsertionScheme,
     InvalidSchemeError,
-    PatternCache,
-    PatternSchemes,
     Region,
     RegionType,
 )
@@ -48,7 +46,6 @@ __all__ = [
     "ChildRegionInputInsertionPoint",
     "ChildRegionOutputInsertionPoint",
     "CombinedRegionSearch",
-    "Config",
     "InsertionScheme",
     "InvalidSchemeError",
     "NodeInputInsertionPoint",
@@ -59,4 +56,6 @@ __all__ = [
     "RegionPattern",
     "RegionType",
     "ResolvedInsertionPoint",
+    "TensorRTPyBenchmark",
+    "TrtExecBenchmark",
 ]
