@@ -21,12 +21,7 @@ Note: Comprehensive integration tests with real ONNX graphs should be in separat
 """
 
 import io
-import os
-import sys
 import unittest
-
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import onnx
 import onnx_graphsurgeon as gs
