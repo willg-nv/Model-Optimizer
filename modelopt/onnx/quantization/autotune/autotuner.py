@@ -69,7 +69,7 @@ from modelopt.onnx.quantization.autotune.insertion_points import (
     merge_resolved_insertion_points,
 )
 from modelopt.onnx.quantization.autotune.region_pattern import RegionPattern
-from modelopt.onnx.quantization.autotune.region_search import CombinedRegionSearch
+from modelopt.onnx.quantization.autotune.torch_region_builder import TorchRegionBuilder
 from modelopt.onnx.quantization.fp8 import int8_to_fp8
 from modelopt.onnx.quantization.graph_utils import get_tensor_consumer_node_indices
 
@@ -2050,52 +2050,9 @@ class QDQAutotuner(QDQAutotunerBase):
             >>> leaf_count = sum(1 for r in self.regions if r.type == RegionType.LEAF)
             >>> print(f"Discovered {leaf_count} LEAF regions for profiling")
         """
-        # =====================================================================
-        # STEP 1: Run Automatic Region Discovery
-        # =====================================================================
-        # Use CombinedRegionSearch to find regions around compute-intensive ops
-        # This creates a hierarchical structure: COMPOSITE → LEAF
         logger.info("Discovering optimization regions")
-        search = CombinedRegionSearch(
-            self.graph,
-            maximum_sequence_region_size=self.config.maximum_sequence_region_size,
-            minimum_topdown_search_size=self.config.minimum_topdown_search_size,
-        )
-        self.regions = search.search_regions()
-
-        # Reassign IDs to top-level regions for clean indexing
-        self._reassign_region_ids(self.regions)
-        logger.debug(f"Found {len(self.regions)} top-level regions")
-
-        # =====================================================================
-        # STEP 2: Flatten Hierarchical Structure
-        # =====================================================================
-        # Traverse the region tree and collect all regions at all levels
-        # This ensures we can profile both parent and child regions
-        all_regions = []
-        for region in self.regions:
-            all_regions.extend(self._visit_region_recursively(region))
-
-        logger.debug(f"Flattened hierarchy to {len(all_regions)} total regions")
-
-        # =====================================================================
-        # STEP 3: Prioritize LEAF Regions
-        # =====================================================================
-        # Organize regions to profile the most specific patterns first:
-        # 1. LEAF regions: Contain actual nodes, most specific patterns
-        # 2. Other non-COMPOSITE: Intermediate abstractions
-        # 3. COMPOSITE regions excluded: Just containers, no direct nodes
-
-        # Extract LEAF regions (highest priority)
-        leaf_regions = [region for region in all_regions if region.type == RegionType.LEAF]
-        other_regions = [region for region in all_regions if region.type != RegionType.LEAF]
-
-        # Combine: LEAF first, then others
-        # This ensures the most granular optimization targets are profiled first
-        all_regions = leaf_regions + other_regions
-
-        # Update self.regions with prioritized list
-        self.regions = all_regions
+        builder = TorchRegionBuilder(self.graph)
+        self.regions = builder.build_regions(linearize=True, only_quantizable=True)
 
         num_leaf = sum(1 for r in self.regions if r.type == RegionType.LEAF)
         num_composite = sum(1 for r in self.regions if r.type == RegionType.COMPOSITE)
