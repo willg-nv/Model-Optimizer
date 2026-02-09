@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -38,7 +37,6 @@ from pathlib import Path
 
 import numpy as np
 
-# Optional dependencies - gracefully handle missing packages
 try:
     import tensorrt as trt
 
@@ -165,11 +163,10 @@ class TrtExecBenchmark(Benchmark):
         super().__init__(timing_cache_file, warmup_runs, timing_runs, plugin_libraries)
         self.trtexec_path = trtexec_path
         self.trtexec_args = trtexec_args if trtexec_args is not None else []
-        self._temp_dir = tempfile.mkdtemp(prefix="trtexec_benchmark_")
-        self.engine_dir = self._temp_dir
-        self.engine_path = os.path.join(self.engine_dir, "engine.trt")
-        self.temp_model_path = os.path.join(self.engine_dir, "temp_model.onnx")
-        self.logger.debug(f"Created temporary engine directory: {self.engine_dir}")
+        self.temp_dir = tempfile.mkdtemp(prefix="trtexec_benchmark_")
+        self.engine_path = os.path.join(self.temp_dir, "engine.trt")
+        self.temp_model_path = os.path.join(self.temp_dir, "temp_model.onnx")
+        self.logger.debug(f"Created temporary engine directory: {self.temp_dir}")
         self.logger.debug(f"Temporary model path: {self.temp_model_path}")
         self.latency_pattern = r"\[I\]\s+Latency:.*?median\s*=\s*([\d.]+)\s*ms"
 
@@ -213,10 +210,10 @@ class TrtExecBenchmark(Benchmark):
 
     def __del__(self):
         """Cleanup temporary directory."""
-        if hasattr(self, "_temp_dir"):
+        if hasattr(self, "temp_dir"):
             try:
-                shutil.rmtree(self._temp_dir, ignore_errors=True)
-                self.logger.debug(f"Cleaned up temporary directory: {self._temp_dir}")
+                shutil.rmtree(self.temp_dir, ignore_errors=True)
+                self.logger.debug(f"Cleaned up temporary directory: {self.temp_dir}")
             except Exception as e:
                 self.logger.warning(f"Failed to cleanup temporary directory: {e}")
 
@@ -344,13 +341,8 @@ class TensorRTPyBenchmark(Benchmark):
 
         self.network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
         self.network_flags |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
-
-        # Load timing cache from disk or create new one
         self._timing_cache = None
         self._load_timing_cache()
-
-        # Storage for user-defined shape configurations
-        # Format: {input_name: (min_shape, opt_shape, max_shape)}
         self._shape_configs = {}
 
     def _load_plugin_libraries(self):
@@ -600,9 +592,8 @@ class TensorRTPyBenchmark(Benchmark):
             min_latency = float(np.min(latencies))
             max_latency = float(np.max(latencies))
 
-            self.logger.info("TensorRT Python API benchmark:")
             self.logger.info(
-                f"  min={min_latency:.3f}ms, max={max_latency:.3f}ms, "
+                f"TensorRT Python API benchmark: min={min_latency:.3f}ms, max={max_latency:.3f}ms, "
                 f"mean={mean_latency:.3f}ms, std={std_latency:.3f}ms, median={median_latency:.3f}ms"
             )
 
@@ -639,33 +630,21 @@ class TensorRTPyBenchmark(Benchmark):
             return float("inf")
         finally:
             try:
+                [inp["device"].free() for inp in inputs if "device" in inp]
+                [out["device"].free() for out in outputs if "device" in out]
                 for inp in inputs:
-                    if "device" in inp:
-                        inp["device"].free()
                     if "host" in inp:
                         del inp["host"]
                 for out in outputs:
-                    if "device" in out:
-                        out["device"].free()
                     if "host" in out:
                         del out["host"]
                 inputs.clear()
                 outputs.clear()
-
-                if context is not None:
-                    del context
-                if stream is not None:
-                    del stream
-                if engine is not None:
-                    del engine
-                if serialized_engine is not None:
-                    del serialized_engine
-                if parser is not None:
-                    del parser
-                if network is not None:
-                    del network
-                if config is not None:
-                    del config
+                resources = [context, stream, engine, serialized_engine, parser, network, config]
+                for resource in resources:
+                    if resource is not None:
+                        del resource
+                resources.clear()
             except Exception as cleanup_error:
                 self.logger.warning(f"Error during cleanup: {cleanup_error}")
 
