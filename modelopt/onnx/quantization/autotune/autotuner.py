@@ -51,7 +51,20 @@ class QDQAutotunerBase:
     """Base class for pattern-based Q/DQ node insertion optimization in ONNX models."""
 
     def __init__(self, model: onnx.ModelProto | gs.Graph):
-        """Initialize the autotuner with an ONNX model."""
+        """Initialize the autotuner with an ONNX model.
+
+        Creates a clean copy of the model graph and initializes internal state.
+        After construction, call initialize() to configure the autotuner, then
+        use a subclass strategy to populate regions (e.g., QDQAutotuner does this
+        automatically during initialize()).
+
+        Args:
+            model: ONNX model (onnx.ModelProto) or graph (gs.Graph) to optimize.
+                   A clean copy is created internally, leaving the original unchanged.
+
+        Raises:
+            TypeError: If model is neither onnx.ModelProto nor gs.Graph
+        """
         if isinstance(model, onnx.ModelProto):
             self.onnx_model = model
         elif isinstance(model, gs.Graph):
@@ -76,7 +89,22 @@ class QDQAutotunerBase:
     def initialize(
         self, config: Config | None = None, pattern_cache: PatternCache | None = None
     ) -> None:
-        """Initialize autotuning session with configuration and pattern cache."""
+        """Initialize autotuning session with configuration and pattern cache.
+
+        Prepares the autotuner for profiling by setting configuration parameters
+        and optionally loading pattern cache data. This base method resets all profiling
+        state and sets up the pattern cache storage.
+
+        Args:
+            config: Autotuning configuration parameters. If None, uses default Config().
+                   Controls Q/DQ parameters, performance thresholds, and scheme generation.
+            pattern_cache: Optional PatternCache object for seeding with known-good schemes.
+                        If None, creates a new empty pattern cache for tracking best schemes.
+                        If provided, uses existing schemes to warm-start optimization.
+
+        Raises:
+            None (safe to call multiple times - will reset state each time)
+        """
         if config is not None:
             self.config = config
 
@@ -109,7 +137,24 @@ class QDQAutotunerBase:
         self.initialized = True
 
     def set_profile_region(self, region: Region | None, commit: bool = True) -> None:
-        """Set the target region for profiling and scheme generation."""
+        """Set the target region for profiling and scheme generation.
+
+        This method manages the profiling workflow:
+        1. If commit=True: Saves current schemes to profiled_patterns
+        2. Creates a RegionPattern from the new region's structure
+        3. For pattern-based: tries to seed schemes from pattern cache if available
+        4. Sets as current for generate() and submit() calls
+
+        Pass region=None to clear the current profile target without setting a new one.
+
+        Args:
+            region: The region to profile next (None to clear current target)
+            commit: If True, commit current schemes to profiled_patterns
+                   before switching. Set to False during initialization.
+
+        Raises:
+            AutotunerNotInitializedError: If initialize() hasn't been called
+        """
         if not self.initialized:
             raise AutotunerNotInitializedError(
                 "QDQAutotunerBase not initialized. Call initialize() first."
@@ -185,13 +230,24 @@ class QDQAutotunerBase:
 
         mode_info = f"seeded with {num_seeded} schemes" if num_seeded > 0 else "starting fresh"
         logger.info(
-            f"Profiling region {region.id} [pattern mode, level {region.level}, "
-            f"size {region.get_size_of_region_and_descendants()}, {mode_info}]"
+            f"Profiling region {region.id} [level {region.level}, size"
+            f"{region.get_size_of_region_and_descendants()}, {mode_info}]"
         )
         logger.debug(f"Pattern signature: {region_pattern.signature}")
 
     def generate(self) -> int:
-        """Generate a new Q/DQ insertion scheme for the current pattern or region."""
+        """Generate a new Q/DQ insertion scheme for the current pattern or region.
+
+        Creates a new InsertionScheme by mutating the top-performing schemes:
+        1. Checks if there are any cached schemes (error=False, latency_ms=inf)
+        2. If cached schemes exist, picks one to re-profile
+        3. Otherwise, generates a new scheme by mutation
+        4. Selects a random scheme from the top 10 performers
+        5. Mutates it by adding/removing insertion points
+        6. Ensures the new scheme is unique (different from existing schemes)
+        7. Adds the scheme to current_profile_pattern_schemes
+
+        """
         if not self.initialized:
             raise AutotunerNotInitializedError(
                 "QDQAutotunerBase not initialized. Call initialize() first."
@@ -261,7 +317,28 @@ class QDQAutotunerBase:
     def export_onnx(
         self, output_path: str | None = None, insert_qdq: bool = True, best: bool = False
     ) -> bytes:
-        """Export ONNX model with Q/DQ nodes inserted according to tested schemes."""
+        """Export ONNX model with Q/DQ nodes inserted according to tested schemes.
+
+        This method creates a modified version of the model by:
+        1. For each region, finding the matching pattern
+        2. Applying the best scheme for profiled patterns
+        3. Applying the current scheme for the active profile pattern
+        4. Resolving pattern-relative insertion points to actual tensor names
+        5. Inserting Q/DQ pairs at the resolved locations
+        6. Converting to FP8 if needed (always creates INT8 first, then converts)
+
+        Args:
+            output_path: Optional file path where the modified ONNX model will be saved.
+                        If None, the model is not saved to disk and only bytes are returned.
+            insert_qdq: If True, insert Q/DQ nodes. If False, export unmodified model
+                       (useful for baseline measurements)
+
+        Returns:
+            bytes: Serialized ONNX model as bytes
+
+        Raises:
+            AutotunerNotInitializedError: If initialize() hasn't been called
+        """
         if not self.initialized:
             raise AutotunerNotInitializedError(
                 "QDQAutotunerBase not initialized. Call initialize() first."
@@ -387,7 +464,19 @@ class QDQAutotunerBase:
         return model_bytes
 
     def submit(self, latency_ms: float, success: bool = True) -> None:
-        """Submit performance measurement for the most recently generated scheme."""
+        """Submit performance measurement for the most recently generated scheme.
+
+        This method records the measured latency and manages the optimization state:
+
+        Args:
+            latency_ms: Measured latency in milliseconds (must be > 0)
+            success: Whether the measurement succeeded. If False, sets scheme.error=True,
+                    logs a warning, and skips speedup calculation.
+
+        Raises:
+            AutotunerNotInitializedError: If initialize() hasn't been called
+            InvalidSchemeError: If no pattern or region is set, or no schemes have been generated
+        """
         if not self.initialized:
             raise AutotunerNotInitializedError(
                 "QDQAutotunerBase not initialized. Call initialize() first."
@@ -458,7 +547,19 @@ class QDQAutotunerBase:
             )
 
     def save_state(self, output_path: str) -> None:
-        """Save complete autotuner state to a YAML file for later reuse."""
+        """Save complete autotuner state to a YAML file for later reuse.
+
+        Serializes all optimization results including:
+        - Baseline latency measurement
+        - All profiled patterns with their signatures
+        - All generated schemes with insertion points and latencies
+        - Configuration parameters
+        - Current profiling state
+
+        Args:
+            output_path: File path where the YAML state file will be written.
+                        Pattern cache will be saved to <base>_pattern_cache.yaml
+        """
         current_pattern_sig = None
         if self.current_profile_pattern_schemes is not None:
             current_pattern_sig = self.current_profile_pattern_schemes.pattern_signature
@@ -498,7 +599,20 @@ class QDQAutotunerBase:
             )
 
     def load_state(self, input_path: str) -> None:
-        """Load autotuner state from a previously saved YAML file."""
+        """Load autotuner state from a previously saved YAML file.
+
+        Restores optimization results from a previous session:
+        1. Matches saved patterns to current model's patterns by signature
+        2. Loads all schemes with their insertion points and latencies (including unmeasured ones)
+        3. Restores baseline latency and configuration
+
+        Args:
+            input_path: File path to the YAML state file to load
+
+        Raises:
+            AutotunerNotInitializedError: If initialize() hasn't been called
+            FileNotFoundError: If the input_path doesn't exist
+        """
         if not self.initialized:
             raise AutotunerNotInitializedError(
                 "QDQAutotunerBase not initialized. Call initialize() first."
@@ -571,7 +685,20 @@ class QDQAutotunerBase:
             logger.debug(f"No pattern cache file at {cache_path}")
 
     def import_insertion_points(self, quantized_tensors: set[str] | list[str]) -> None:
-        """Import Q/DQ insertion points from a list of quantized tensors and update pattern cache."""
+        """Import Q/DQ insertion points from a list of quantized tensors and update pattern cache.
+
+        Analyzes the current model's regions against the provided quantized tensors
+        to extract Q/DQ insertion patterns. For each region, creates a pattern cache
+        entry that captures which insertion points correspond to the quantized tensors.
+        These cached patterns can then be used as seeds for future autotuning sessions.
+
+        Args:
+            quantized_tensors: Set or list of tensor names that are quantized
+                              (i.e., tensors that have Q/DQ nodes applied to them)
+
+        Raises:
+            AutotunerNotInitializedError: If initialize() hasn't been called
+        """
         if not self.initialized:
             raise AutotunerNotInitializedError(
                 "QDQAutotunerBase not initialized. Call initialize() first."
@@ -607,7 +734,22 @@ class QDQAutotunerBase:
     def _compute_convergence_metrics(
         self, schemes: list[InsertionScheme], best_scheme: InsertionScheme | None
     ) -> tuple[int | None, float | None]:
-        """Compute convergence metrics for a collection of schemes."""
+        """Compute convergence metrics for a collection of schemes.
+
+        Analyzes when the best scheme was discovered during the profiling process
+        by sorting schemes by their profile timestamps and finding the position
+        of the best scheme.
+
+        Args:
+            schemes: List of insertion schemes with profile timestamps
+            best_scheme: The best performing scheme (lowest latency)
+
+        Returns:
+            Tuple of (samples_before_best, time_to_best) where:
+            - samples_before_best: Number of samples tested before finding best (0-based index)
+            - time_to_best: Time in seconds from first sample to best sample
+            Both values are None if metrics cannot be computed (e.g., missing timestamps)
+        """
         samples_before_best = None
         time_to_best = None
 
@@ -690,7 +832,29 @@ class QDQAutotunerBase:
         return [p for p in all_points if key_fn(p) in current_points]
 
     def _generate_next_insertion_sample(self) -> InsertionScheme:
-        """Generate a new insertion scheme by mutating top performers."""
+        """Generate a new insertion scheme by mutating top performers.
+
+        This is the core scheme generation algorithm:
+        1. Identifies top schemes by latency
+        2. Randomly selects one as the base
+        3. Mutates node input insertion points (add, remove, or both)
+        4. Mutates region composite insertion points (child boundaries)
+        5. Mutates region output insertion points
+        6. Returns new unique scheme
+
+        **Mutation Strategy:**
+        - Node input points: Add/remove 1-3 insertion points
+        - Region composite points: Add/remove 1-3 boundary points
+        - Region output points: Add/remove 1-3 output points
+        - Mutation type chosen randomly: 'add', 'remove', or 'both'
+
+        **Baseline Case:**
+        If no schemes exist yet, returns an empty baseline scheme.
+
+        Returns:
+            New InsertionScheme with mutated insertion points.
+            Returns empty scheme if no region is set or no candidates exist.
+        """
         if self.current_profile_region is None:
             return InsertionScheme()
 
@@ -891,7 +1055,20 @@ class QDQAutotunerBase:
         quant_dtype: np.dtype,
         q_scale: float,
     ) -> tuple[gs.Node, gs.Node]:
-        """Create QuantizeLinear and DequantizeLinear node pair."""
+        """Create QuantizeLinear and DequantizeLinear node pair.
+
+        Args:
+            tensor_name: Name of the tensor being quantized
+            qdq_input: Input tensor to the Q node
+            output_shape: Shape for Q/DQ outputs (may be None)
+            output_dtype: Dtype for DQ output (also used for scale dtype)
+            quant_dtype: Dtype for quantized values
+            quant_type: Quantization type string
+            q_scale: Quantization scale
+
+        Returns:
+            Tuple of (q_node, dq_node)
+        """
         # Create unique names for Q/DQ nodes
         q_name = f"QDQ_Q_{tensor_name}".replace("/", "_").replace(":", "_")
         dq_name = f"QDQ_DQ_{tensor_name}".replace("/", "_").replace(":", "_")
@@ -943,7 +1120,17 @@ class QDQAutotunerBase:
     def _insert_qdq_at_tensors(
         self, graph: gs.Graph, resolved_insertion_points: set[ResolvedInsertionPoint]
     ) -> None:
-        """Insert Q/DQ (Quantize/Dequantize) node pairs at specified locations."""
+        """Insert Q/DQ (Quantize/Dequantize) node pairs at specified locations.
+
+        This is the main entry point for Q/DQ insertion. It:
+        1. Builds tensor map and tensor-to-users map for efficient lookup
+        2. Processes each resolved insertion point to insert Q/DQ nodes
+        3. Handles two insertion modes based on node_index
+
+        Args:
+            graph: Graph to modify in-place
+            resolved_insertion_points: Set of ResolvedInsertionPoint objects specifying where to insert Q/DQ
+        """
         q_scale = self.config.default_q_scale
         quant_type = self.config.default_quant_type
         quant_dtype = self._get_quant_dtype(quant_type)
@@ -1031,12 +1218,28 @@ class QDQAutotuner(QDQAutotunerBase):
     def initialize(
         self, config: Config | None = None, pattern_cache: PatternCache | None = None
     ) -> None:
-        """Initialize autotuner and discover optimization regions automatically."""
+        """Initialize autotuner and discover optimization regions automatically.
+
+        Extends base class initialization by automatically searching for regions
+        after configuration is set up. Regions are discovered using pattern-based
+        search around compute-intensive operations.
+        """
         super().initialize(config, pattern_cache)
         self._search_regions()
 
     def _visit_region_recursively(self, region: Region) -> list[Region]:
-        """Recursively traverse region hierarchy and collect all regions."""
+        """Recursively traverse region hierarchy and collect all regions.
+
+        Performs depth-first traversal of the region tree starting from a given
+        region. Collects the root region and all descendant regions (children,
+        grandchildren, etc.) into a flat list.
+
+        Args:
+            region: Root region to start traversal from
+
+        Returns:
+            List of all regions in the subtree (including root), in pre-order DFS.
+        """
         regions = [region]
 
         for child in region.get_children():
@@ -1045,7 +1248,15 @@ class QDQAutotuner(QDQAutotunerBase):
         return regions
 
     def _reassign_region_ids(self, regions: list[Region]) -> None:
-        """Reassign sequential IDs to regions in breadth-first order."""
+        """Reassign sequential IDs to regions in breadth-first order.
+
+        Traverses the region hierarchy (including children) and assigns new
+        sequential IDs starting from 0. This ensures clean, predictable region
+        numbering after region discovery and manipulation.
+
+        Args:
+            regions: List of top-level regions (children will be processed too)
+        """
         region_id = 0
 
         queue = deque(regions)
@@ -1057,7 +1268,19 @@ class QDQAutotuner(QDQAutotunerBase):
             queue.extend(region.get_children())
 
     def _search_regions(self) -> None:
-        """Discover and organize optimization regions automatically."""
+        """Discover and organize optimization regions automatically.
+
+        This is the core region discovery method that:
+        1. Runs automatic region search to find optimization targets
+        2. Flattens hierarchical structure into a list
+        3. Prioritizes LEAF regions (contain actual nodes)
+        4. Reassigns IDs for clean indexing
+
+        **Search Strategy:**
+        Uses CombinedRegionSearch which performs:
+        - Phase 1: Bottom-up partitioning based on divergence/convergence
+        - Phase 2: Top-down refinement creating hierarchical structure
+        """
         logger.info("Discovering optimization regions")
         search = CombinedRegionSearch(
             self.graph,
