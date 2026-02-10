@@ -156,11 +156,8 @@ class RegionSearchBase:
             current_node_idx, distance = queue.popleft()
             if distance >= max_steps:
                 continue
-            current_node = self.graph.nodes[current_node_idx]
-            for output in current_node.outputs:
-                if output.name not in self.tensor_users_map:
-                    continue
-                for next_node_idx in self.tensor_users_map[output.name]:
+            for output in self.graph.nodes[current_node_idx].outputs:
+                for next_node_idx in self.tensor_users_map.get(output.name, ()):
                     if next_node_idx not in reachable:
                         reachable[next_node_idx] = distance + 1
                         queue.append((next_node_idx, distance + 1))
@@ -213,8 +210,7 @@ class RegionSearchBase:
 
         branches: list[int] = []
         for output in node.outputs:
-            if output.name in self.tensor_users_map:
-                branches.extend(self.tensor_users_map[output.name])
+            branches.extend(self.tensor_users_map.get(output.name, []))
 
         branches = list(dict.fromkeys(branches))
 
@@ -250,12 +246,11 @@ class RegionSearchBase:
         # Evaluate each candidate convergence point
         for candidate_idx in common_nodes:
             # Define the potential region: nodes between start and candidate
-            region_nodes: set[int] = set()
-            region_nodes.update(set(reachable_from_start.keys()))
+            region_nodes: set[int] = reachable_from_start.keys()
             reachable_from_candidate = self.forward_reachable_nodes_map.get(candidate_idx, {})
-            region_nodes.difference_update(set(reachable_from_candidate.keys()))
+            region_nodes = region_nodes - reachable_from_candidate.keys()
 
-            broken_region = False
+            valid = True
             for rnode_index in region_nodes:
                 reachable_from_rnode = self.forward_reachable_nodes_map.get(rnode_index, {})
                 rnode_to_candidate_distance = reachable_from_rnode.get(candidate_idx, float("inf"))
@@ -268,24 +263,17 @@ class RegionSearchBase:
                     rnode_to_test_distance = reachable_from_rnode.get(test_node_idx, float("inf"))
                     # If either distance is infinite, region is broken
                     # (indicates disconnected components or unreachable convergence)
-                    if rnode_to_test_distance == float(
-                        "inf"
-                    ) or rnode_to_candidate_distance == float("inf"):
-                        broken_region = True
+                    if any(
+                        d == float("inf")
+                        for d in (rnode_to_test_distance, rnode_to_candidate_distance)
+                    ):
+                        valid = False
                         break
-                    # If test_node is closer than candidate, we have an escape!
-                    # This means computation flows OUT of region before converging
-                    if rnode_to_test_distance < rnode_to_candidate_distance:
-                        broken_region = True
-                        break
-                if broken_region:
+                if not valid:
                     break
-            # Skip this candidate if region is invalid
-            if broken_region:
+            if not valid:
                 continue
-            # Valid candidate! Check if it's the nearest one
             max_distance = max(reachable[candidate_idx] for reachable in branch_reachable)
-
             if max_distance < min_max_distance:
                 min_max_distance = max_distance
                 converge_node_idx = candidate_idx
@@ -384,57 +372,41 @@ class RegionSearchBase:
         max_items: int = DEFAULT_MAX_NODES_TO_SHOW,
         file=None,
     ) -> None:
-        """Print hierarchical region tree in human-readable text format.
-
-        Recursively prints the region hierarchy with indentation showing depth.
-        For each region, displays:
-        - ID, level, and type (LEAF/COMPOSITE/ROOT)
-        - Node counts (direct and recursive)
-        - I/O tensor counts
-        - Sample of nodes in the region (up to max_nodes_to_show)
-        - Child regions (recursively)
-        """
+        """Print hierarchical region tree in human-readable text format."""
         region = region or self.root
-
         file = file or sys.stdout
         p = "  " * indent
 
-        def print_items(items, label, formatter=str):
-            """Print a truncated list of items."""
+        def truncated(items, fmt=str):
+            """Yield formatted items, truncating with count if needed."""
             items = list(items)
-            print(f"{p}│  ├─ {label}: {len(items)}", file=file)
-            for item in items[:max_items]:
-                print(f"{p}│  │    - {formatter(item)}", file=file)
+            yield from (fmt(x) for x in items[:max_items])
             if len(items) > max_items:
-                print(f"{p}│  │    ... and {len(items) - max_items} more", file=file)
+                yield f"... and {len(items) - max_items} more"
 
-        # Header
-        print(
-            f"{p}├─ Region {region.id} (Level {region.level}, Type: {region.type.value})",
-            file=file,
-        )
-
-        # Counts
         direct_nodes = region.get_nodes()
         children = region.get_children()
+        # Header + counts
+        print(
+            f"{p}├─ Region {region.id} (Level {region.level}, Type: {region.type.value})", file=file
+        )
         print(f"{p}│  ├─ Direct nodes: {len(direct_nodes)}", file=file)
         print(f"{p}│  ├─ Total nodes: {len(region.get_region_nodes_and_descendants())}", file=file)
         print(f"{p}│  ├─ Children: {len(children)}", file=file)
-
         # I/O
-        print_items(region.inputs, "Inputs")
-        print_items(region.outputs, "Outputs")
-
+        for label, items in [("Inputs", region.inputs), ("Outputs", region.outputs)]:
+            print(f"{p}│  ├─ {label}: {len(items)}", file=file)
+            for line in truncated(items):
+                print(f"{p}│  │    - {line}", file=file)
         # Direct nodes
         if direct_nodes:
             print(f"{p}│\n{p}│  Nodes in this region:", file=file)
-            for node_idx in sorted(direct_nodes)[:max_items]:
-                if node_idx < len(self.graph.nodes):
-                    node = self.graph.nodes[node_idx]
-                    print(f"{p}│    - Node {node_idx}: {node.op} ({node.name})", file=file)
-            if len(direct_nodes) > max_items:
-                print(f"{p}│    ... and {len(direct_nodes) - max_items} more", file=file)
 
+            def node_fmt(i: int) -> str:
+                return f"Node {i}: {self.graph.nodes[i].op} ({self.graph.nodes[i].name})"
+
+            for line in truncated(sorted(direct_nodes), node_fmt):
+                print(f"{p}│    - {line}", file=file)
         # Children
         if children:
             print(f"{p}│\n{p}│  Child regions:", file=file)
