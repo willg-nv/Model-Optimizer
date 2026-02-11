@@ -21,10 +21,10 @@ Note: Comprehensive integration tests with real ONNX graphs should be in separat
 """
 
 import io
-import unittest
 
 import onnx
 import onnx_graphsurgeon as gs
+import pytest
 from onnx import helper
 
 from modelopt.onnx.quantization.autotune.common import Region, RegionType
@@ -35,7 +35,8 @@ from modelopt.onnx.quantization.autotune.region_search import (
 )
 
 
-def create_simple_linear_graph():
+@pytest.fixture
+def simple_linear_graph():
     """
     Create a simple linear graph: Input -> Conv -> Relu -> Output.
 
@@ -74,11 +75,11 @@ def create_simple_linear_graph():
     model = helper.make_model(graph, producer_name="test")
 
     # Convert to GraphSurgeon
-    gs_graph = gs.import_onnx(model)
-    return gs_graph
+    return gs.import_onnx(model)
 
 
-def create_divergent_graph():
+@pytest.fixture
+def divergent_graph():
     """
     Create a graph with divergence: Input -> Conv -> [Relu1, Relu2] -> Add -> Output.
 
@@ -111,25 +112,15 @@ def create_divergent_graph():
     )
 
     model = helper.make_model(graph, producer_name="test")
-    gs_graph = gs.import_onnx(model)
-    return gs_graph
+    return gs.import_onnx(model)
 
 
-class TestRegionPartitioner(unittest.TestCase):
+class TestRegionPartitioner:
     """Test RegionPartitioner basic functionality."""
 
-    def test_creation_linear_graph(self):
-        """Test creating RegionPartitioner with a simple linear graph."""
-        graph = create_simple_linear_graph()
-        partitioner = RegionPartitioner(graph)
-
-        assert partitioner is not None
-        assert partitioner.graph == graph
-
-    def test_partition_linear_graph(self):
+    def test_partition_linear_graph(self, simple_linear_graph):
         """Test partitioning a simple linear graph."""
-        graph = create_simple_linear_graph()
-        partitioner = RegionPartitioner(graph)
+        partitioner = RegionPartitioner(simple_linear_graph)
 
         regions = partitioner.partition_graph()
 
@@ -139,12 +130,11 @@ class TestRegionPartitioner(unittest.TestCase):
         # Check that regions cover most nodes (ONNX GS may add Constant nodes that aren't partitioned)
         total_nodes = sum(len(r.get_region_nodes_and_descendants()) for r in regions)
         assert total_nodes > 0
-        assert total_nodes <= len(graph.nodes)
+        assert total_nodes <= len(simple_linear_graph.nodes)
 
-    def test_partition_divergent_graph(self):
+    def test_partition_divergent_graph(self, divergent_graph):
         """Test partitioning a divergent graph."""
-        graph = create_divergent_graph()
-        partitioner = RegionPartitioner(graph)
+        partitioner = RegionPartitioner(divergent_graph)
 
         regions = partitioner.partition_graph()
 
@@ -154,39 +144,23 @@ class TestRegionPartitioner(unittest.TestCase):
         # Check that regions cover most nodes (ONNX GS may add Constant nodes that aren't partitioned)
         total_nodes = sum(len(r.get_region_nodes_and_descendants()) for r in regions)
         assert total_nodes > 0
-        assert total_nodes <= len(graph.nodes)
+        assert total_nodes <= len(divergent_graph.nodes)
 
 
-class TestTopDownRegionBuilder(unittest.TestCase):
+class TestTopDownRegionBuilder:
     """Test TopDownRegionBuilder basic functionality."""
 
-    def test_creation(self):
-        """Test creating TopDownRegionBuilder."""
-        graph = create_simple_linear_graph()
-
-        # Create a root region with all nodes
-        root = Region(region_id=0, level=0, region_type=RegionType.LEAF)
-        for idx in range(len(graph.nodes)):
-            root.nodes.add(idx)
-
-        builder = TopDownRegionBuilder(graph, root)
-
-        assert builder is not None
-        assert builder.graph == graph
-
-    def test_build_composite_region(self):
+    def test_build_composite_region(self, simple_linear_graph):
         """Test building a composite region."""
-        graph = create_simple_linear_graph()
-
         # First partition to get initial regions
-        partitioner = RegionPartitioner(graph)
+        partitioner = RegionPartitioner(simple_linear_graph)
         initial_regions = partitioner.partition_graph()
 
         if len(initial_regions) > 0:
             # Use first region as root for top-down building
             root_region = initial_regions[0]
 
-            builder = TopDownRegionBuilder(graph, root_region, next_region_id=100)
+            builder = TopDownRegionBuilder(simple_linear_graph, root_region, next_region_id=100)
 
             # Build composite region (may return LEAF or COMPOSITE depending on structure)
             composite = builder.build_composite_region()
@@ -196,24 +170,15 @@ class TestTopDownRegionBuilder(unittest.TestCase):
             # For simple linear graphs, may stay as LEAF
             assert composite.type in [RegionType.LEAF, RegionType.COMPOSITE]
         else:
-            self.skipTest("No initial regions to refine")
+            pytest.skip("No initial regions to refine")
 
 
-class TestCombinedRegionSearch(unittest.TestCase):
+class TestCombinedRegionSearch:
     """Test CombinedRegionSearch two-phase algorithm."""
 
-    def test_creation(self):
-        """Test creating CombinedRegionSearch."""
-        graph = create_simple_linear_graph()
-        search = CombinedRegionSearch(graph)
-
-        assert search is not None
-        assert search.graph == graph
-
-    def test_search_linear_graph(self):
+    def test_search_linear_graph(self, simple_linear_graph):
         """Test searching regions in a simple linear graph."""
-        graph = create_simple_linear_graph()
-        search = CombinedRegionSearch(graph)
+        search = CombinedRegionSearch(simple_linear_graph)
 
         regions = search.search_regions()
 
@@ -223,17 +188,16 @@ class TestCombinedRegionSearch(unittest.TestCase):
         # Check that regions cover most nodes (ONNX GS may add Constant nodes that aren't partitioned)
         total_nodes = sum(len(r.get_region_nodes_and_descendants()) for r in regions)
         assert total_nodes > 0
-        assert total_nodes <= len(graph.nodes)
+        assert total_nodes <= len(simple_linear_graph.nodes)
 
         # Each region should have valid inputs/outputs
         for region in regions:
             assert region.inputs is not None
             assert region.outputs is not None
 
-    def test_search_divergent_graph(self):
+    def test_search_divergent_graph(self, divergent_graph):
         """Test searching regions in a divergent graph."""
-        graph = create_divergent_graph()
-        search = CombinedRegionSearch(graph)
+        search = CombinedRegionSearch(divergent_graph)
 
         regions = search.search_regions()
 
@@ -243,12 +207,11 @@ class TestCombinedRegionSearch(unittest.TestCase):
         # Check that regions cover most nodes (ONNX GS may add Constant nodes that aren't partitioned)
         total_nodes = sum(len(r.get_region_nodes_and_descendants()) for r in regions)
         assert total_nodes > 0
-        assert total_nodes <= len(graph.nodes)
+        assert total_nodes <= len(divergent_graph.nodes)
 
-    def test_region_hierarchy(self):
+    def test_region_hierarchy(self, simple_linear_graph):
         """Test that regions have proper hierarchical structure."""
-        graph = create_simple_linear_graph()
-        search = CombinedRegionSearch(graph)
+        search = CombinedRegionSearch(simple_linear_graph)
 
         regions = search.search_regions()
 
@@ -261,13 +224,13 @@ class TestCombinedRegionSearch(unittest.TestCase):
                 for child in region.get_children():
                     assert child.parent == region
 
-    def test_parameters(self):
+    def test_parameters(self, simple_linear_graph):
         """Test CombinedRegionSearch with custom parameters."""
-        graph = create_simple_linear_graph()
-
         # Test with different parameter values
         search = CombinedRegionSearch(
-            graph, maximum_sequence_region_size=5, minimum_topdown_search_size=5
+            simple_linear_graph,
+            maximum_sequence_region_size=5,
+            minimum_topdown_search_size=5,
         )
 
         regions = search.search_regions()
@@ -275,61 +238,35 @@ class TestCombinedRegionSearch(unittest.TestCase):
         assert len(regions) > 0
 
 
-class TestPrintTree(unittest.TestCase):
+class TestPrintTree:
     """Test print_tree functionality."""
 
-    def test_print_tree_basic(self):
-        """Test basic print_tree output."""
-        graph = create_simple_linear_graph()
-        search = CombinedRegionSearch(graph)
+    def test_print_tree_output_content(self, simple_linear_graph):
+        """Test that print_tree output contains region, node, and I/O information."""
+        search = CombinedRegionSearch(simple_linear_graph)
         search.search_regions()
 
-        # Capture output to StringIO
         output = io.StringIO()
         search.print_tree(file=output)
-
         result = output.getvalue()
 
-        # Should contain region information
+        # Region information
         assert "Region" in result
         assert "Level" in result
         assert "Type:" in result
 
-    def test_print_tree_contains_node_info(self):
-        """Test that print_tree output contains node information."""
-        graph = create_simple_linear_graph()
-        search = CombinedRegionSearch(graph)
-        search.search_regions()
-
-        output = io.StringIO()
-        search.print_tree(file=output)
-
-        result = output.getvalue()
-
-        # Should contain node counts
+        # Node counts
         assert "Direct nodes:" in result
         assert "Total nodes:" in result
         assert "Children:" in result
 
-    def test_print_tree_contains_io_info(self):
-        """Test that print_tree output contains input/output tensor info."""
-        graph = create_simple_linear_graph()
-        search = CombinedRegionSearch(graph)
-        search.search_regions()
-
-        output = io.StringIO()
-        search.print_tree(file=output)
-
-        result = output.getvalue()
-
-        # Should contain I/O information
+        # I/O information
         assert "Inputs:" in result
         assert "Outputs:" in result
 
-    def test_print_tree_divergent_graph(self):
+    def test_print_tree_divergent_graph(self, divergent_graph):
         """Test print_tree on a divergent graph with more complex structure."""
-        graph = create_divergent_graph()
-        search = CombinedRegionSearch(graph)
+        search = CombinedRegionSearch(divergent_graph)
         search.search_regions()
 
         output = io.StringIO()
@@ -341,10 +278,9 @@ class TestPrintTree(unittest.TestCase):
         assert "Region" in result
         assert len(result) > 0
 
-    def test_print_tree_max_nodes_to_show(self):
+    def test_print_tree_max_nodes_to_show(self, simple_linear_graph):
         """Test print_tree with custom max_nodes_to_show parameter."""
-        graph = create_simple_linear_graph()
-        search = CombinedRegionSearch(graph)
+        search = CombinedRegionSearch(simple_linear_graph)
         search.search_regions()
 
         # Test with different max_nodes_to_show values
@@ -358,10 +294,9 @@ class TestPrintTree(unittest.TestCase):
         assert len(output1.getvalue()) > 0
         assert len(output2.getvalue()) > 0
 
-    def test_print_tree_specific_region(self):
+    def test_print_tree_specific_region(self, simple_linear_graph):
         """Test print_tree with a specific region instead of root."""
-        graph = create_simple_linear_graph()
-        search = CombinedRegionSearch(graph)
+        search = CombinedRegionSearch(simple_linear_graph)
         regions = search.search_regions()
 
         if len(regions) > 0:
@@ -373,10 +308,9 @@ class TestPrintTree(unittest.TestCase):
             assert "Region" in result
             assert f"Region {regions[0].id}" in result
 
-    def test_print_tree_partitioner(self):
+    def test_print_tree_partitioner(self, simple_linear_graph):
         """Test print_tree on RegionPartitioner."""
-        graph = create_simple_linear_graph()
-        partitioner = RegionPartitioner(graph)
+        partitioner = RegionPartitioner(simple_linear_graph)
         partitioner.partition_graph()
 
         output = io.StringIO()
@@ -386,15 +320,13 @@ class TestPrintTree(unittest.TestCase):
         assert "Region" in result
         assert len(result) > 0
 
-    def test_print_tree_top_down_builder(self):
+    def test_print_tree_top_down_builder(self, simple_linear_graph):
         """Test print_tree on TopDownRegionBuilder."""
-        graph = create_simple_linear_graph()
-
         # Create a root region with all nodes
         root = Region(region_id=0, level=0, region_type=RegionType.LEAF)
-        root.nodes.update(range(len(graph.nodes)))
+        root.nodes.update(range(len(simple_linear_graph.nodes)))
 
-        builder = TopDownRegionBuilder(graph, root)
+        builder = TopDownRegionBuilder(simple_linear_graph, root)
         # Compute region I/O boundaries before building
         builder.compute_region_boundaries(root)
         builder.build_composite_region()

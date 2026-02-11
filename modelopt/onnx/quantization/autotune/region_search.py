@@ -16,7 +16,7 @@
 """Hierarchical region discovery and partitioning for ONNX graphs."""
 
 import sys
-from collections import deque
+from collections import defaultdict, deque
 
 import onnx_graphsurgeon as gs
 
@@ -190,6 +190,74 @@ class RegionSearchBase:
         logger.debug(f"Reachability map complete: avg {avg_reachable:.1f} reachable nodes per node")
         return forward_reachable_nodes_map
 
+    def _find_common_reachable_nodes(
+        self, node_idx: int, branches: list[int]
+    ) -> tuple[list[dict], set[int]] | None:
+        """Find common reachable nodes from all branches (potential convergence points).
+
+        Used as STEP 1 of convergence detection in _find_converge_nodes.
+
+        Args:
+            node_idx: Index of the divergent node (excluded from common_nodes).
+            branches: List of branch head node indices.
+
+        Returns:
+            (branch_reachable, common_nodes) if valid; None if no convergence candidates.
+        """
+        branch_reachable = [self.forward_reachable_nodes_map.get(b, {}) for b in branches]
+
+        if not branch_reachable:
+            logger.debug("  No reachable nodes from branches")
+            return [], set()
+
+        common_nodes = set.intersection(*[set(r.keys()) for r in branch_reachable])
+        logger.debug(f"  {len(common_nodes)} common nodes found")
+        common_nodes.discard(node_idx)
+
+        if not common_nodes:
+            logger.debug("  No valid convergence candidates")
+            return [], set()
+
+        return branch_reachable, common_nodes
+
+    def _evaluate_convergence_candidate(
+        self,
+        candidate_idx: int,
+        reachable_from_start: dict,
+        branch_reachable: list,
+    ) -> tuple[bool, int]:
+        r"""Check if a candidate convergence node forms a valid region and return its max distance.
+
+        A valid region has no \"escaping\" edges: no node inside the region may reach a node
+        outside the region before reaching the candidate convergence point.
+
+        Args:
+            candidate_idx: Candidate convergence node index.
+            reachable_from_start: Forward reachability from the divergent node.
+            branch_reachable: Per-branch reachability dicts (for max distance).
+
+        Returns:
+            (is_valid, max_distance). max_distance is only meaningful when is_valid is True.
+        """
+        region_nodes: set[int] = set(reachable_from_start.keys())
+        reachable_from_candidate = self.forward_reachable_nodes_map.get(candidate_idx, {})
+        region_nodes = region_nodes - set(reachable_from_candidate.keys())
+
+        for rnode_index in region_nodes:
+            reachable_from_rnode = self.forward_reachable_nodes_map.get(rnode_index, {})
+            rnode_to_candidate_distance = reachable_from_rnode.get(candidate_idx, float("inf"))
+            for test_node_idx in reachable_from_rnode:
+                if test_node_idx in region_nodes:
+                    continue
+                rnode_to_test_distance = reachable_from_rnode.get(test_node_idx, float("inf"))
+                if any(
+                    d == float("inf") for d in (rnode_to_test_distance, rnode_to_candidate_distance)
+                ):
+                    return False, 0
+
+        max_distance = max(reachable[candidate_idx] for reachable in branch_reachable)
+        return True, max_distance
+
     def _find_converge_nodes(self, node_idx: int) -> tuple[int | None, set[int]]:
         """Find convergence point and intermediate nodes for a divergent node.
 
@@ -216,67 +284,30 @@ class RegionSearchBase:
 
         logger.debug(f"  {len(branches)} unique branches found")
 
-        # Need at least 2 branches for convergence to be meaningful
         if len(branches) <= 1:
             logger.debug("  Insufficient branches for convergence")
             return None, set()
 
-        # STEP 1: Find Common Reachable Nodes (Potential Convergence Points)
-        branch_reachable = [self.forward_reachable_nodes_map.get(b, {}) for b in branches]
-
-        if not branch_reachable:
-            logger.debug("  No reachable nodes from branches")
+        branch_reachable, common_nodes = self._find_common_reachable_nodes(node_idx, branches)
+        if not branch_reachable or not common_nodes:
             return None, set()
 
-        common_nodes = set.intersection(*[set(r.keys()) for r in branch_reachable])
-        logger.debug(f"  {len(common_nodes)} common nodes found")
-        # Remove the divergent node itself (not a convergence point)
-        common_nodes.discard(node_idx)
-
-        if not common_nodes:
-            logger.debug("  No valid convergence candidates")
-            return None, set()
-
-        # STEP 2: Select Best Convergence Node with Region Validity Check
+        # Select Best Convergence Node with Region Validity Check
         converge_node_idx: int | None = None
         min_max_distance = float("inf")
 
         reachable_from_start = self.forward_reachable_nodes_map.get(node_idx, {})
 
-        # Evaluate each candidate convergence point
         for candidate_idx in common_nodes:
-            # Define the potential region: nodes between start and candidate
-            region_nodes: set[int] = reachable_from_start.keys()
-            reachable_from_candidate = self.forward_reachable_nodes_map.get(candidate_idx, {})
-            region_nodes = region_nodes - reachable_from_candidate.keys()
-
-            valid = True
-            for rnode_index in region_nodes:
-                reachable_from_rnode = self.forward_reachable_nodes_map.get(rnode_index, {})
-                rnode_to_candidate_distance = reachable_from_rnode.get(candidate_idx, float("inf"))
-                for test_node_idx in reachable_from_rnode:
-                    # Skip nodes that are inside the region (they're fine)
-                    if test_node_idx in region_nodes:
-                        continue
-                    # test_node is OUTSIDE the region. Check if it's "escaping"
-                    # An escaping edge: region_node reaches test_node BEFORE candidate
-                    rnode_to_test_distance = reachable_from_rnode.get(test_node_idx, float("inf"))
-                    # If either distance is infinite, region is broken
-                    # (indicates disconnected components or unreachable convergence)
-                    if any(
-                        d == float("inf")
-                        for d in (rnode_to_test_distance, rnode_to_candidate_distance)
-                    ):
-                        valid = False
-                        break
-                if not valid:
-                    break
+            valid, max_distance = self._evaluate_convergence_candidate(
+                candidate_idx, reachable_from_start, branch_reachable
+            )
             if not valid:
                 continue
-            max_distance = max(reachable[candidate_idx] for reachable in branch_reachable)
             if max_distance < min_max_distance:
                 min_max_distance = max_distance
                 converge_node_idx = candidate_idx
+
         # If no valid convergence found, this divergence has no convergence
         if converge_node_idx is None:
             logger.debug("  No valid convergence found")
@@ -286,7 +317,8 @@ class RegionSearchBase:
         logger.debug(
             f"  Convergence at node {converge_node_idx} ({converge_node.op}), distance {min_max_distance}"
         )
-        # STEP 3: Compute All Nodes Between Divergence and Convergence
+
+        # Compute All Nodes Between Divergence and Convergence
         visited_nodes: set[int] = set()
         for candidate_idx in reachable_from_start:
             if candidate_idx == converge_node_idx:
@@ -604,27 +636,12 @@ class RegionPartitioner(RegionSearchBase):
     def _build_region_from_node(self, node_idx: int):
         """Process a single node and create appropriate region(s) based on its pattern.
 
-        This is the core dispatch method that determines how to handle each node
-        based on whether it's divergent (branches) or sequential. Implements the
-        three pattern recognition strategies described in the class documentation.
+        This is the core dispatch method that determines how to handle each node based on whether
+        it's divergent (branches) or sequential.
 
-        **Pattern 1: Divergent with Convergence (Ideal Case)**
-        Creates a complete "funnel" region capturing parallel branches:
-        - Example: ResNet skip connection (Conv branch + identity → Add)
-        - Condition: converge_node found AND distance < DEFAULT_MAX_STEPS
-        - Result: One region containing all nodes between divergence and convergence
-
-        **Pattern 2: Divergent without Convergence (Boundary Case)**
-        Creates a single-node "orphan" region:
-        - Example: Final layer that branches to multiple outputs
-        - Condition: No convergence found OR convergence too far away
-        - Result: Region containing only the divergent node
-
-        **Pattern 3: Sequential Chain (Common Case)**
-        Creates a region containing linear sequence:
-        - Example: Conv → BN → ReLU → MaxPool
-        - Condition: Node is not divergent
-        - Result: Region containing the full non-divergent chain
+        - Pattern 1: Divergent with Convergence (Ideal Case)
+        - Pattern 2: Divergent without Convergence (Boundary Case)
+        - Pattern 3: Sequential Chain (Common Case)
 
         Args:
             node_idx: Index of node to process
@@ -790,12 +807,10 @@ class TopDownRegionBuilder(RegionSearchBase):
         Returns:
             Mapping from tensor names to regions that consume them
         """
-        region_usage_map: dict[str, list[Region]] = {}
+        region_usage_map: dict[str, list[Region]] = defaultdict(list)
         for region in regions:
-            for tensor_name in region.inputs:
-                if tensor_name not in region_usage_map:
-                    region_usage_map[tensor_name] = []
-                region_usage_map[tensor_name].append(region)
+            for input_tensor in region.inputs:
+                region_usage_map[input_tensor].append(region)
         return region_usage_map
 
     def _split_sequence_regions(self, root: Region) -> list[Region]:
@@ -954,29 +969,30 @@ class TopDownRegionBuilder(RegionSearchBase):
     def build_composite_region(self) -> Region:
         """Refine a flat region into a hierarchical COMPOSITE region."""
         # merge converged regions into composite regions
-        self.regions = self._merge_converged_regions(self.root)
+        regions = self._merge_converged_regions(self.root)
         # split sequence regions into smaller regions
         result_regions: list[Region] = []
-        for region in self.regions:
+        for region in regions:
             result_regions.extend(self._split_sequence_regions(region))
         for region in result_regions:
             self.compute_region_boundaries(region, include_constant=True)
-        self.regions = result_regions
+        regions = result_regions
         # merge all regions into a single composite region
-        if len(self.regions) > 1:
+        if len(regions) > 1:
             composite = Region(
                 region_id=self.next_region_id,
                 level=self.root.level,
                 region_type=RegionType.COMPOSITE,
             )
             self.next_region_id += 1
-            self.regions = sorted(
-                self.regions, key=lambda x: RegionPattern.from_region(x, self.graph).signature
+            regions = sorted(
+                regions, key=lambda x: RegionPattern.from_region(x, self.graph).signature
             )
-            for region in self.regions:
+            for region in regions:
                 composite.add_child(region)
             self.compute_region_boundaries(composite)
-            self.regions = [composite]
+            regions = [composite]
+        self.regions = regions
         return self.regions[0]
 
 
