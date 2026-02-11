@@ -23,118 +23,82 @@ Note: Full integration tests with TensorRT benchmarking should be in separate in
 import os
 import sys
 import tempfile
-import unittest
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add parent and current directory to path
+_test_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(_test_dir))
+sys.path.insert(0, _test_dir)
 
+import models as _test_models
 import onnx
 import onnx_graphsurgeon as gs
-from onnx import helper
+import pytest
 
 from modelopt.onnx.quantization.autotune import Config, QDQAutotuner, RegionPattern
 from modelopt.onnx.quantization.autotune.common import PatternCache, RegionType
 
 
-def create_simple_conv_model():
+@pytest.fixture
+def simple_conv_model():
+    """Simple ONNX model: Input -> Conv -> Relu -> Output. Created via models.py."""
+    return _test_models._create_simple_conv_onnx_model()
+
+
+def _create_test_config():
     """
-    Create a simple ONNX model: Input -> Conv -> Relu -> Output.
+    Create a reasonable config for testing.
 
-    This is a minimal model for testing autotuner initialization.
+    Uses sensible defaults suitable for unit tests:
+    - verbose=False: Keep test output clean
+    - maximum_sequence_region_size=50: Allow larger test regions
+    - Other parameters: Match Config defaults for typical behavior
     """
-    # Input
-    input_tensor = helper.make_tensor_value_info("input", onnx.TensorProto.FLOAT, [1, 3, 224, 224])
-
-    # Output
-    output_tensor = helper.make_tensor_value_info(
-        "output", onnx.TensorProto.FLOAT, [1, 64, 224, 224]
+    return Config(
+        # Logging
+        verbose=False,
+        # Performance Requirements
+        # Quantization Parameters
+        default_q_scale=0.1,
+        default_q_zero_point=0,
+        default_quant_type="int8",
+        # Region Builder Settings
+        maximum_sequence_region_size=50,
+        minimum_topdown_search_size=10,
+        # Scheme Generation Settings
+        top_percent_to_mutate=0.1,
+        minimum_schemes_to_mutate=10,
+        maximum_mutations=3,
+        maximum_generation_attempts=100,
+        # Pattern Cache Settings
+        pattern_cache_minimum_distance=4,
+        pattern_cache_max_entries_per_pattern=32,
     )
 
-    # Conv node
-    conv_node = helper.make_node(
-        "Conv", inputs=["input", "conv_weight"], outputs=["conv_out"], name="conv"
-    )
 
-    # Relu node
-    relu_node = helper.make_node("Relu", inputs=["conv_out"], outputs=["output"], name="relu")
-
-    # Create graph
-    graph = helper.make_graph(
-        [conv_node, relu_node],
-        "simple_conv",
-        [input_tensor],
-        [output_tensor],
-        initializer=[
-            helper.make_tensor(
-                "conv_weight", onnx.TensorProto.FLOAT, [64, 3, 3, 3], [0.1] * (64 * 3 * 3 * 3)
-            )
-        ],
-    )
-
-    # Create model
-    model = helper.make_model(graph, producer_name="test")
-    return model
-
-
-class TestQDQAutotuner(unittest.TestCase):
+class TestQDQAutotuner:
     """Test QDQAutotuner functionality."""
 
-    @staticmethod
-    def _create_test_config():
-        """
-        Create a reasonable config for testing.
-
-        Uses sensible defaults suitable for unit tests:
-        - verbose=False: Keep test output clean
-        - maximum_sequence_region_size=50: Allow larger test regions
-        - Other parameters: Match Config defaults for typical behavior
-        """
-        return Config(
-            # Logging
-            verbose=False,
-            # Performance Requirements
-            # Quantization Parameters
-            default_q_scale=0.1,
-            default_q_zero_point=0,
-            default_quant_type="int8",
-            # Region Builder Settings
-            maximum_sequence_region_size=50,
-            minimum_topdown_search_size=10,
-            # Scheme Generation Settings
-            top_percent_to_mutate=0.1,
-            minimum_schemes_to_mutate=10,
-            maximum_mutations=3,
-            maximum_generation_attempts=100,
-            # Pattern Cache Settings
-            pattern_cache_minimum_distance=4,
-            pattern_cache_max_entries_per_pattern=32,
-        )
-
-    def test_creation_with_onnx_model(self):
+    def test_creation_with_onnx_model(self, simple_conv_model):
         """Test creating autotuner with ONNX ModelProto."""
-        model = create_simple_conv_model()
-        autotuner = QDQAutotuner(model)
+        autotuner = QDQAutotuner(simple_conv_model)
 
         assert autotuner is not None
         assert autotuner.onnx_model is not None
         assert autotuner.graph is not None
 
-    def test_creation_with_gs_graph(self):
+    def test_creation_with_gs_graph(self, simple_conv_model):
         """Test creating autotuner with GraphSurgeon graph."""
-        model = create_simple_conv_model()
-        gs_graph = gs.import_onnx(model)
-
+        gs_graph = gs.import_onnx(simple_conv_model)
         autotuner = QDQAutotuner(gs_graph)
 
         assert autotuner is not None
         assert autotuner.graph is not None
 
-    def test_initialize_with_default_config(self):
+    def test_initialize_with_default_config(self, simple_conv_model):
         """Test initialization with default test config."""
-        model = create_simple_conv_model()
-        autotuner = QDQAutotuner(model)
+        autotuner = QDQAutotuner(simple_conv_model)
 
-        config = self._create_test_config()
+        config = _create_test_config()
         autotuner.initialize(config)
 
         # Should have provided config
@@ -144,10 +108,9 @@ class TestQDQAutotuner(unittest.TestCase):
         # Should have discovered regions
         assert len(autotuner.regions) > 0
 
-    def test_initialize_with_config(self):
+    def test_initialize_with_config(self, simple_conv_model):
         """Test initialization with custom config (different from default)."""
-        model = create_simple_conv_model()
-        autotuner = QDQAutotuner(model)
+        autotuner = QDQAutotuner(simple_conv_model)
 
         # Create custom config with different values
         config = Config(
@@ -180,23 +143,21 @@ class TestQDQAutotuner(unittest.TestCase):
         assert autotuner.config.pattern_cache_minimum_distance == 2
         assert autotuner.config.pattern_cache_max_entries_per_pattern == 16
 
-    def test_initialize_with_pattern_cache(self):
+    def test_initialize_with_pattern_cache(self, simple_conv_model):
         """Test initialization with pattern cache."""
-        model = create_simple_conv_model()
-        autotuner = QDQAutotuner(model)
+        autotuner = QDQAutotuner(simple_conv_model)
 
-        config = self._create_test_config()
+        config = _create_test_config()
         pattern_cache = PatternCache()
         autotuner.initialize(config, pattern_cache=pattern_cache)
 
         assert autotuner.pattern_cache is not None
 
-    def test_region_discovery(self):
+    def test_region_discovery(self, simple_conv_model):
         """Test that regions are automatically discovered."""
-        model = create_simple_conv_model()
-        autotuner = QDQAutotuner(model)
+        autotuner = QDQAutotuner(simple_conv_model)
 
-        config = self._create_test_config()
+        config = _create_test_config()
         autotuner.initialize(config)
 
         # Should discover at least one region
@@ -207,11 +168,10 @@ class TestQDQAutotuner(unittest.TestCase):
             assert region.get_id() is not None
             assert region.get_type() in [RegionType.LEAF, RegionType.COMPOSITE, RegionType.ROOT]
 
-    def test_export_baseline_model(self):
+    def test_export_baseline_model(self, simple_conv_model):
         """Test exporting baseline model without Q/DQ."""
-        model = create_simple_conv_model()
-        autotuner = QDQAutotuner(model)
-        config = self._create_test_config()
+        autotuner = QDQAutotuner(simple_conv_model)
+        config = _create_test_config()
         autotuner.initialize(config)
 
         with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as f:
@@ -229,11 +189,10 @@ class TestQDQAutotuner(unittest.TestCase):
             if os.path.exists(output_path):
                 os.unlink(output_path)
 
-    def test_set_profile_region(self):
+    def test_set_profile_region(self, simple_conv_model):
         """Test setting a region for profiling."""
-        model = create_simple_conv_model()
-        autotuner = QDQAutotuner(model)
-        config = self._create_test_config()
+        autotuner = QDQAutotuner(simple_conv_model)
+        config = _create_test_config()
         autotuner.initialize(config)
 
         if len(autotuner.regions) > 0:
@@ -243,13 +202,12 @@ class TestQDQAutotuner(unittest.TestCase):
             assert autotuner.current_profile_region == region
             assert autotuner.current_profile_pattern_schemes is not None
         else:
-            self.skipTest("No regions discovered")
+            pytest.skip("No regions discovered")
 
-    def test_generate_scheme(self):
+    def test_generate_scheme(self, simple_conv_model):
         """Test generating an insertion scheme."""
-        model = create_simple_conv_model()
-        autotuner = QDQAutotuner(model)
-        config = self._create_test_config()
+        autotuner = QDQAutotuner(simple_conv_model)
+        config = _create_test_config()
         autotuner.initialize(config)
 
         if len(autotuner.regions) > 0:
@@ -260,24 +218,22 @@ class TestQDQAutotuner(unittest.TestCase):
             # Should return a valid index (>= 0) or -1 if no more unique schemes
             assert isinstance(scheme_idx, int)
         else:
-            self.skipTest("No regions discovered")
+            pytest.skip("No regions discovered")
 
-    def test_submit_latency(self):
+    def test_submit_latency(self, simple_conv_model):
         """Test submitting performance measurement."""
-        model = create_simple_conv_model()
-        autotuner = QDQAutotuner(model)
-        config = self._create_test_config()
+        autotuner = QDQAutotuner(simple_conv_model)
+        config = _create_test_config()
         autotuner.initialize(config)
         # Submit baseline latency
         autotuner.submit(10.5)
         # Baseline should be recorded
         assert autotuner.baseline_latency_ms == 10.5
 
-    def test_save_and_load_state(self):
+    def test_save_and_load_state(self, simple_conv_model):
         """Test saving and loading autotuner state."""
-        model = create_simple_conv_model()
-        autotuner = QDQAutotuner(model)
-        config = self._create_test_config()
+        autotuner = QDQAutotuner(simple_conv_model)
+        config = _create_test_config()
         autotuner.initialize(config)
 
         # Submit some results
@@ -292,8 +248,8 @@ class TestQDQAutotuner(unittest.TestCase):
             assert os.path.exists(state_path)
 
             # Create new autotuner and load state
-            autotuner2 = QDQAutotuner(model)
-            config2 = self._create_test_config()
+            autotuner2 = QDQAutotuner(simple_conv_model)
+            config2 = _create_test_config()
             autotuner2.initialize(config2)
             autotuner2.load_state(state_path)
 
@@ -303,11 +259,10 @@ class TestQDQAutotuner(unittest.TestCase):
             if os.path.exists(state_path):
                 os.unlink(state_path)
 
-    def test_regions_prioritization(self):
+    def test_regions_prioritization(self, simple_conv_model):
         """Test that LEAF regions are prioritized."""
-        model = create_simple_conv_model()
-        autotuner = QDQAutotuner(model)
-        config = self._create_test_config()
+        autotuner = QDQAutotuner(simple_conv_model)
+        config = _create_test_config()
         autotuner.initialize(config)
 
         # Check that LEAF regions come before non-LEAF
@@ -322,11 +277,10 @@ class TestQDQAutotuner(unittest.TestCase):
             # All LEAF should come before non-LEAF
             assert max(leaf_indices) < min(non_leaf_indices)
 
-    def test_profiled_patterns_tracking(self):
+    def test_profiled_patterns_tracking(self, simple_conv_model):
         """Test that profiled patterns are tracked."""
-        model = create_simple_conv_model()
-        autotuner = QDQAutotuner(model)
-        config = self._create_test_config()
+        autotuner = QDQAutotuner(simple_conv_model)
+        config = _create_test_config()
         autotuner.initialize(config)
         autotuner.submit(10.0)
 
@@ -342,4 +296,4 @@ class TestQDQAutotuner(unittest.TestCase):
                 profiled_patterns = [p.pattern.signature for p in autotuner.profiled_patterns]
                 assert pattern_sig in profiled_patterns
         else:
-            self.skipTest("No regions discovered")
+            pytest.skip("No regions discovered")
