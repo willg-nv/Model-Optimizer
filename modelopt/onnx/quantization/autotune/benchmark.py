@@ -123,6 +123,18 @@ class Benchmark(ABC):
         """
         return self.run(path_or_bytes, log_file)
 
+    def _write_log_file(self, file: Path | str | None, content: str) -> None:
+        if file is None:
+            return
+        if isinstance(file, str):
+            file = Path(file)
+        try:
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(content)
+            self.logger.debug(f"Saved logs to: {file}")
+        except Exception as e:
+            self.logger.warning(f"Failed to save logs to {file}: {e}")
+
 
 class TrtExecBenchmark(Benchmark):
     """TensorRT benchmark using trtexec command-line tool.
@@ -243,31 +255,24 @@ class TrtExecBenchmark(Benchmark):
             cmd = [*self._base_cmd, f"--onnx={model_path}"]
             self.logger.debug(f"Running: {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True)  # nosec B603
-            if log_file is not None:
-                try:
-                    log_path = Path(log_file)
-                    log_path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(log_path, "w") as f:
-                        output = "\n".join(
-                            [
-                                f"Command: {' '.join(cmd)}",
-                                f"Return code: {result.returncode}",
-                                "=" * 80,
-                                "STDOUT:",
-                                "=" * 80,
-                                result.stdout,
-                                "\n" + "=" * 80,
-                                "STDERR:",
-                                "=" * 80,
-                                result.stderr,
-                                "\n" + "=" * 80,
-                            ]
-                        )
-                        f.write(output)
-                    self.logger.debug(f"Saved trtexec logs to: {log_file}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to save logs to {log_file}: {e}")
-
+            self._write_log_file(
+                log_file,
+                "\n".join(
+                    [
+                        f"Command: {' '.join(cmd)}",
+                        f"Return code: {result.returncode}",
+                        "=" * 80,
+                        "STDOUT:",
+                        "=" * 80,
+                        result.stdout,
+                        "\n" + "=" * 80,
+                        "STDERR:",
+                        "=" * 80,
+                        result.stderr,
+                        "\n" + "=" * 80,
+                    ]
+                ),
+            )
             if result.returncode != 0:
                 self.logger.error(f"trtexec failed with return code {result.returncode}")
                 self.logger.error(f"stderr: {result.stderr}")
@@ -635,36 +640,30 @@ class TensorRTPyBenchmark(Benchmark):
                 f"mean={mean_latency:.3f}ms, std={std_latency:.3f}ms, median={median_latency:.3f}ms"
             )
 
-            if log_file is not None:
-                try:
-                    log_path = Path(log_file)
-                    log_path.parent.mkdir(parents=True, exist_ok=True)
-                    model_info = (
-                        f"<bytes, size={len(path_or_bytes)}>"
-                        if isinstance(path_or_bytes, bytes)
-                        else path_or_bytes
-                    )
-                    with open(log_path, "w") as f:
-                        output = "\n".join(
-                            [
-                                "TensorRT Python API Benchmark",
-                                f"Model: {model_info}",
-                                f"Build time: {build_time:.2f}s",
-                                f"Warmup runs: {self.warmup_runs}",
-                                f"Timing runs: {self.timing_runs}",
-                                "Latency Statistics:",
-                                f"  Min:    {min_latency:.3f} ms",
-                                f"  Max:    {max_latency:.3f} ms",
-                                f"  Mean:   {mean_latency:.3f} ms",
-                                f"  Std:    {std_latency:.3f} ms",
-                                f"  Median: {median_latency:.3f} ms",
-                                f"All latencies: {latencies.tolist()}",
-                            ]
-                        )
-                        f.write(output)  # type: ignore[arg-type]
-                    self.logger.debug(f"Saved benchmark logs to: {log_file}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to save logs to {log_file}: {e}")
+            model_info = (
+                f"<bytes, size={len(path_or_bytes)}>"
+                if isinstance(path_or_bytes, bytes)
+                else path_or_bytes
+            )
+            self._write_log_file(
+                log_file,
+                "\n".join(
+                    [
+                        "TensorRT Python API Benchmark",
+                        f"Model: {model_info}",
+                        f"Build time: {build_time:.2f}s",
+                        f"Warmup runs: {self.warmup_runs}",
+                        f"Timing runs: {self.timing_runs}",
+                        "Latency Statistics:",
+                        f"  Min:    {min_latency:.3f} ms",
+                        f"  Max:    {max_latency:.3f} ms",
+                        f"  Mean:   {mean_latency:.3f} ms",
+                        f"  Std:    {std_latency:.3f} ms",
+                        f"  Median: {median_latency:.3f} ms",
+                        f"All latencies: {latencies.tolist()}",
+                    ]
+                ),
+            )
             return median_latency
         except Exception as e:
             self.logger.error(f"Benchmark failed: {e}", exc_info=True)
