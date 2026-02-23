@@ -482,8 +482,8 @@ class TensorRTPyBenchmark(Benchmark):
                 return float("inf")
 
             has_dynamic_shapes = any(
-                any(dim == -1 for dim in input_tensor.shape)
-                for input_tensor in network.get_inputs()
+                any(dim == -1 for dim in network.get_input(i).shape)
+                for i in range(network.num_inputs)
             )
 
             if has_dynamic_shapes:
