@@ -50,12 +50,12 @@ from modelopt.onnx.quantization.graph_utils import get_tensor_consumer_node_indi
 _MUTATION_SPECS = [
     ("node_inputs", "node input points", lambda p: (p.node_index, p.input_index)),
     (
-        "region_composite_inputs",
+        "child_region_inputs",
         "region composite points",
         lambda p: (p.region_index, p.input_index),
     ),
     (
-        "region_output_points",
+        "region_outputs",
         "region output points",
         lambda p: (p.region_index, p.node_index, p.output_index),
     ),
@@ -1224,7 +1224,7 @@ class QDQAutotuner(QDQAutotunerBase):
         self._search_regions()
 
     @staticmethod
-    def _visit_region_recursively(self, region: Region) -> list[Region]:
+    def _visit_region_recursively(region: Region) -> list[Region]:
         """Recursively traverse region hierarchy and collect all regions.
 
         Performs depth-first traversal of the region tree starting from a given
@@ -1240,7 +1240,7 @@ class QDQAutotuner(QDQAutotunerBase):
         regions = [region]
 
         for child in region.get_children():
-            regions.extend(self._visit_region_recursively(child))
+            regions.extend(QDQAutotuner._visit_region_recursively(child))
 
         return regions
 
@@ -1291,7 +1291,7 @@ class QDQAutotuner(QDQAutotunerBase):
         # Flatten the hierarchy into a list of all regions
         all_regions = []
         for region in self.regions:
-            all_regions.extend(self._visit_region_recursively(region))
+            all_regions.extend(QDQAutotuner._visit_region_recursively(region))
 
         all_regions.sort(key=lambda r: r.type != RegionType.LEAF)
         self.regions = all_regions

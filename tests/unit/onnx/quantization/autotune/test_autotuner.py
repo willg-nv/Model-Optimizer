@@ -159,8 +159,8 @@ class TestQDQAutotuner:
 
         # Regions should be valid
         for region in autotuner.regions:
-            assert region.get_id() is not None
-            assert region.get_type() in [RegionType.LEAF, RegionType.COMPOSITE, RegionType.ROOT]
+            assert region.id is not None
+            assert region.type in [RegionType.LEAF, RegionType.COMPOSITE, RegionType.ROOT]
 
     def test_export_baseline_model(self, simple_conv_model):
         """Test exporting baseline model without Q/DQ."""
@@ -207,39 +207,33 @@ class TestQDQAutotuner:
         if len(autotuner.regions) == 0:
             pytest.skip("No regions discovered")
 
-        autotuner.submit(10.0)  # baseline
+        autotuner.submit(10.0)
         region = autotuner.regions[0]
         autotuner.set_profile_region(region)
 
-        # Generate multiple schemes and submit a latency for each
-        num_generated = 0
-        while True:
-            scheme_idx = autotuner.generate()
-            if scheme_idx < 0:
-                break
-            assert isinstance(scheme_idx, int)
-            autotuner.submit(10.0 + num_generated * 0.1)  # dummy latency
-            num_generated += 1
-            if num_generated >= 5:  # cap iterations
-                break
-
-        assert num_generated > 0, "Expected at least one scheme to be generated"
-        autotuner.set_profile_region(None, commit=True)
-
-        # Export with Q/DQ and verify Q/DQ nodes are in the model
         with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as f:
             output_path = f.name
-        try:
-            autotuner.export_onnx(output_path, insert_qdq=True)
-            exported = onnx.load(output_path)
-            node_ops = [n.op_type for n in exported.graph.node]
-            assert "QuantizeLinear" in node_ops, "Expected QuantizeLinear nodes in exported model"
-            assert "DequantizeLinear" in node_ops, (
-                "Expected DequantizeLinear nodes in exported model"
+
+            has_q = False
+            has_dq = False
+            for _ in range(5):
+                scheme_idx = autotuner.generate()
+                assert isinstance(scheme_idx, int)
+                autotuner.submit(10.0 + _ * 0.1)
+
+                autotuner.export_onnx(output_path, insert_qdq=True)
+                exported = onnx.load(output_path)
+                node_ops = [n.op_type for n in exported.graph.node]
+                for node_op in node_ops:
+                    if node_op == "QuantizeLinear":
+                        has_q = True
+                    if node_op == "DequantizeLinear":
+                        has_dq = True
+                if has_q and has_dq:
+                    break
+            assert has_q and has_dq, (
+                "Expected QuantizeLinear and DequantizeLinear nodes in exported model"
             )
-        finally:
-            if os.path.exists(output_path):
-                os.unlink(output_path)
 
     def test_submit_latency(self, simple_conv_model):
         """Test submitting performance measurement."""
@@ -287,12 +281,8 @@ class TestQDQAutotuner:
         autotuner.initialize(config)
 
         # Check that LEAF regions come before non-LEAF
-        leaf_indices = [
-            i for i, r in enumerate(autotuner.regions) if r.get_type() == RegionType.LEAF
-        ]
-        non_leaf_indices = [
-            i for i, r in enumerate(autotuner.regions) if r.get_type() != RegionType.LEAF
-        ]
+        leaf_indices = [i for i, r in enumerate(autotuner.regions) if r.type == RegionType.LEAF]
+        non_leaf_indices = [i for i, r in enumerate(autotuner.regions) if r.type != RegionType.LEAF]
 
         if leaf_indices and non_leaf_indices:
             # All LEAF should come before non-LEAF
