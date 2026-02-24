@@ -112,8 +112,6 @@ def run_autotune() -> int:
         logger.error("Failed to initialize TensorRT benchmark")
         return 1
 
-    logger.info("Autotuning Mode: Pattern-Based")
-
     try:
         node_filter_list = None
         if args.node_filter_list:

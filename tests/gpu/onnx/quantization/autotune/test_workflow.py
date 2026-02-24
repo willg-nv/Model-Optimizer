@@ -52,11 +52,11 @@ def test_export_quantized_model(use_trtexec, simple_conv_model):
     output_path = output_dir + ".quant.onnx"
 
     try:
-        init_benchmark_instance(use_trtexec=use_trtexec)
+        init_benchmark_instance(use_trtexec=use_trtexec, timing_runs=100)
         autotuner = region_pattern_autotuning_workflow(baseline_model_path, Path(output_dir))
 
         # Export model with Q/DQ insertion
-        autotuner.export_onnx(output_path, insert_qdq=True)
+        autotuner.export_onnx(output_path, insert_qdq=True, best=True)
 
         # Verify file was created
         assert os.path.exists(output_path)
