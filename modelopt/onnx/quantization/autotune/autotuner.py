@@ -413,6 +413,22 @@ class QDQAutotunerBase:
         full_insertion_scheme = pattern.get_full_insertion_scheme(region, self.graph)
         assert full_insertion_scheme is not None
         all_region_ips = pattern.matches(region, self.graph, full_insertion_scheme)
+        for ip in all_region_ips:
+            node = self.graph.nodes[ip.node_index]
+            # Conv/ConvTranspose inputs and weights must be excluded together
+            if (
+                node.op in ["Conv", "ConvTranspose"]
+                and ip.input_index == 0
+                and len(node.inputs) >= 2
+            ):
+                resolved_insertion_points.discard(ip)
+                resolved_insertion_points.discard(
+                    ResolvedInsertionPoint(
+                        tensor_name=node.inputs[1].name,
+                        node_index=ip.node_index,
+                        input_index=1,
+                    )
+                )
         assert isinstance(all_region_ips, set)
         resolved_insertion_points.difference_update(all_region_ips)
         if all_region_ips:
