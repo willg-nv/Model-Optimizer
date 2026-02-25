@@ -84,7 +84,7 @@ def init_benchmark_instance(
     timing_cache_file: str | None = None,
     warmup_runs: int = 5,
     timing_runs: int = 20,
-    trtexec_args: str | None = None,
+    trtexec_args: list[str] | None = None,
 ):
     """Initialize global TensorRT benchmark instance for model performance measurement.
 

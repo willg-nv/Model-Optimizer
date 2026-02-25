@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -48,7 +49,7 @@ def test_export_quantized_model(use_trtexec, simple_conv_model):
     # Save baseline model
     onnx.save(simple_conv_model, baseline_model_path)
 
-    output_dir = baseline_model_path.strip(".onnx")
+    output_dir = baseline_model_path.replace(".onnx", "")
     output_path = output_dir + ".quant.onnx"
 
     try:
@@ -75,3 +76,7 @@ def test_export_quantized_model(use_trtexec, simple_conv_model):
     finally:
         if os.path.exists(output_path):
             os.unlink(output_path)
+        if os.path.exists(baseline_model_path):
+            os.unlink(baseline_model_path)
+        if os.path.isdir(output_dir):
+            shutil.rmtree(output_dir)
