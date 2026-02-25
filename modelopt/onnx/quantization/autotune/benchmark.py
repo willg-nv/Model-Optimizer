@@ -134,7 +134,7 @@ class Benchmark(ABC):
             log_file: Optional path to save benchmark logs
 
         Returns:
-            Measured latency in milliseconds
+            Measured latency in milliseconds, or float("inf") on failure.
         """
         return self.run(path_or_bytes, log_file)
 
@@ -526,6 +526,32 @@ class TensorRTPyBenchmark(Benchmark):
         finally:
             del parser, network, config
 
+    @staticmethod
+    def _alloc_pinned_host(size: int, dtype: np.dtype) -> tuple[Any, np.ndarray, Any]:
+        """Allocate pinned host memory and return (host_ptr, array view, cuda error).
+
+        Returns:
+            (host_ptr, arr, err): On success err is cudaSuccess; on failure host_ptr/arr
+            may be None and err is the CUDA error code.
+        """
+        nbytes = size * np.dtype(dtype).itemsize
+        err, host_ptr = cudart.cudaMallocHost(nbytes)
+        if err != cudart.cudaError_t.cudaSuccess:
+            return (None, None, err)
+        addr = int(host_ptr) if hasattr(host_ptr, "__int__") else host_ptr
+        ctype = np.ctypeslib.as_ctypes_type(dtype)
+        arr = np.ctypeslib.as_array((ctype * size).from_address(addr))
+        return (host_ptr, arr, cudart.cudaError_t.cudaSuccess)
+
+    @staticmethod
+    def _free_buffers(bufs: list[dict]) -> None:
+        """Free host and device memory for a list of buffer dicts (host_ptr, device_ptr)."""
+        for buf in bufs:
+            if "host_ptr" in buf and buf["host_ptr"] is not None:
+                cudart.cudaFreeHost(buf["host_ptr"])
+            if "device_ptr" in buf and buf["device_ptr"] is not None:
+                cudart.cudaFree(buf["device_ptr"])
+
     def _allocate_buffers(
         self,
         engine: "trt.ICudaEngine",
@@ -538,25 +564,11 @@ class TensorRTPyBenchmark(Benchmark):
             context: Execution context with tensor shapes set.
 
         Returns:
-            (inputs, outputs, stream_handle) where inputs/outputs are lists of buffer dicts
-            with keys host_ptr, host, device_ptr, nbytes, name; stream_handle is a CUDA stream.
-
-        Raises:
-            RuntimeError: If CUDA allocation or stream creation fails.
+            (inputs, outputs, cuda_error): On success cuda_error is cudaSuccess;
+            on failure inputs/outputs are empty and cuda_error is the failing CUDA error code.
         """
-
-        def _alloc_pinned_host(size: int, dtype: np.dtype):
-            nbytes = size * np.dtype(dtype).itemsize
-            err, host_ptr = cudart.cudaMallocHost(nbytes)
-            if err != cudart.cudaError_t.cudaSuccess:
-                raise RuntimeError(f"cudaMallocHost failed: {err}")
-            addr = int(host_ptr) if hasattr(host_ptr, "__int__") else host_ptr
-            ctype = np.ctypeslib.as_ctypes_type(dtype)
-            arr = np.ctypeslib.as_array((ctype * size).from_address(addr))
-            return host_ptr, arr
-
-        inputs = []
-        outputs = []
+        inputs: list[dict] = []
+        outputs: list[dict] = []
 
         for i in range(engine.num_io_tensors):
             tensor_name = engine.get_tensor_name(i)
@@ -568,9 +580,16 @@ class TensorRTPyBenchmark(Benchmark):
 
             err, device_ptr = cudart.cudaMalloc(nbytes)
             if err != cudart.cudaError_t.cudaSuccess:
-                raise RuntimeError(f"cudaMalloc failed: {err}")
+                self.logger.error(f"cudaMalloc failed: {err}")
+                self._free_buffers(inputs + outputs)
+                return ([], [], err)
 
-            host_ptr, host_mem = _alloc_pinned_host(size, dtype)
+            host_ptr, host_mem, err = self._alloc_pinned_host(size, dtype)
+            if err != cudart.cudaError_t.cudaSuccess:
+                self.logger.error(f"cudaMallocHost failed: {err}")
+                cudart.cudaFree(device_ptr)
+                self._free_buffers(inputs + outputs)
+                return ([], [], err)
 
             if engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT:
                 np.copyto(host_mem, np.random.randn(size).astype(dtype))
@@ -596,11 +615,7 @@ class TensorRTPyBenchmark(Benchmark):
 
             context.set_tensor_address(tensor_name, int(device_ptr))
 
-        err, stream_handle = cudart.cudaStreamCreate()
-        if err != cudart.cudaError_t.cudaSuccess:
-            raise RuntimeError(f"cudaStreamCreate failed: {err}")
-
-        return (inputs, outputs, stream_handle)
+        return (inputs, outputs, cudart.cudaError_t.cudaSuccess)
 
     def _setup_execution_context(
         self, serialized_engine: bytes
@@ -691,7 +706,8 @@ class TensorRTPyBenchmark(Benchmark):
             flush_timing_cache: If True, save the timing cache to disk after engine build.
 
         Returns:
-            Measured median latency in milliseconds
+            Measured median latency in milliseconds, or float("inf") on any error
+            (e.g. build failure, deserialization failure, buffer/stream allocation failure).
         """
         serialized_engine = engine = context = stream_handle = None
         inputs, outputs = [], []
@@ -705,7 +721,17 @@ class TensorRTPyBenchmark(Benchmark):
             if engine is None or context is None:
                 return float("inf")
 
-            inputs, outputs, stream_handle = self._allocate_buffers(engine, context)
+            inputs, outputs, alloc_err = self._allocate_buffers(engine, context)
+            if alloc_err != cudart.cudaError_t.cudaSuccess:
+                self.logger.error(f"Buffer allocation failed: {alloc_err}")
+                return float("inf")
+
+            err, sh = cudart.cudaStreamCreate()
+            if err != cudart.cudaError_t.cudaSuccess:
+                self.logger.error(f"cudaStreamCreate failed: {err}")
+                return float("inf")
+            stream_handle = sh
+
             self._run_warmup(context, inputs, outputs, stream_handle)
             latencies = self._run_timing(context, inputs, outputs, stream_handle)
 
@@ -750,11 +776,7 @@ class TensorRTPyBenchmark(Benchmark):
             return float("inf")
         finally:
             try:
-                for buf in inputs + outputs:
-                    if "host_ptr" in buf:
-                        cudart.cudaFreeHost(buf["host_ptr"])
-                    if "device_ptr" in buf:
-                        cudart.cudaFree(buf["device_ptr"])
+                self._free_buffers(inputs + outputs)
                 if stream_handle is not None:
                     cudart.cudaStreamDestroy(stream_handle)
                 del (
