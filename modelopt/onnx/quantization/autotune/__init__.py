@@ -21,8 +21,8 @@ region analysis to efficiently explore and optimize Q/DQ insertion strategies.
 """
 
 # Core data structures
-from .benchmark import TensorRTPyBenchmark, TrtExecBenchmark
 from .autotuner import QDQAutotuner
+from .benchmark import TensorRTPyBenchmark, TrtExecBenchmark
 from .common import (
     AutotunerError,
     AutotunerNotInitializedError,
