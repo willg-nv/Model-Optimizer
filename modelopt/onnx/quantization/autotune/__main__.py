@@ -17,6 +17,7 @@
 
 import argparse
 import sys
+import tempfile
 from pathlib import Path
 
 from modelopt.onnx.logging_config import logger
@@ -29,7 +30,7 @@ DEFAULT_OUTPUT_DIR = "./autotuner_output"
 DEFAULT_NUM_SCHEMES = 30
 DEFAULT_QUANT_TYPE = "int8"
 DEFAULT_DQ_DTYPE = "float32"
-DEFAULT_TIMING_CACHE = "/tmp/trtexec_timing.cache"  # nosec B108
+DEFAULT_TIMING_CACHE = str(Path(tempfile.gettempdir()) / "trtexec_timing.cache")
 DEFAULT_WARMUP_RUNS = 5
 DEFAULT_TIMING_RUNS = 20
 
