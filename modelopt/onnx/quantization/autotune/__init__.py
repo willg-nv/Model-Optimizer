@@ -42,6 +42,7 @@ from .insertion_points import (
 )
 from .region_pattern import RegionPattern
 from .region_search import CombinedRegionSearch
+from .torch_region_builder import TorchRegionBuilder
 
 __all__ = [
     "AutotunerError",
@@ -61,5 +62,6 @@ __all__ = [
     "RegionType",
     "ResolvedInsertionPoint",
     "TensorRTPyBenchmark",
+    "TorchRegionBuilder",
     "TrtExecBenchmark",
 ]
