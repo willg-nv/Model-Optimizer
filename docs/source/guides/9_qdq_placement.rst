@@ -2,14 +2,18 @@
 Automated Q/DQ Placement Optimization
 ===============================================
 
+.. contents:: Table of Contents
+   :local:
+   :depth: 2
+
 Overview
 ========
 
-The ``modelopt.onnx.quantization.autotune`` module provides automated optimization of Quantize/Dequantize (Q/DQ) node placement in ONNX models. Instead of manually deciding where to insert Q/DQ nodes, the autotuner systematically explores different placement strategies and uses TensorRT performance measurements to find the optimal configuration that minimizes inference latency.
+The ``modelopt.onnx.quantization.autotune`` module automates Q/DQ (Quantize/Dequantize) placement in ONNX models. It explores placement strategies and uses TensorRT latency measurements to choose a configuration that minimizes inference time.
 
 **Key Features:**
 
-* **Automatic Region Discovery**: Intelligently partitions your model into optimization regions
+* **Automatic Region Discovery**: Intelligently partitions the model into optimization regions
 * **Pattern-Based Optimization**: Groups structurally similar regions and optimizes them together
 * **TensorRT Performance Measurement**: Uses actual inference latency (not theoretical estimates)
 * **Crash Recovery**: Checkpoint/resume capability for long-running optimizations
@@ -18,10 +22,10 @@ The ``modelopt.onnx.quantization.autotune`` module provides automated optimizati
 
 **When to Use This Tool:**
 
-* You have an ONNX model you want to quantize for TensorRT deployment
-* You want to optimize Q/DQ placement for best performance (not just accuracy)
-* Your model has repeating structures (e.g., transformer blocks, ResNet layers)
-* You need automated optimization without manual Q/DQ placement
+* Quantizing an ONNX model for TensorRT deployment
+* Optimizing Q/DQ placement for best performance (not just accuracy)
+* The model has repeating structures (e.g., transformer blocks, ResNet layers)
+* Automated optimization is needed without manual Q/DQ placement
 
 Quick Start
 ===========
@@ -45,7 +49,7 @@ The easiest way to use the autotuner is via the command-line interface:
 
 The command will:
 
-1. Discover regions in your model automatically
+1. Discover regions in the model automatically
 2. Measure baseline performance (no quantization)
 3. Test different Q/DQ placement schemes for each region pattern
 4. Select the best scheme based on TensorRT latency measurements
@@ -53,9 +57,11 @@ The command will:
 
 **Output Files:**
 
+Files are written under the output directory (default ``./autotuner_output``, or the path given by ``--output_dir``):
+
 .. code-block:: text
 
-   results/
+   autotuner_output/                         # default; or the path passed to --output_dir
    ├── autotuner_state.yaml                  # Checkpoint for resuming
    ├── autotuner_state_pattern_cache.yaml    # Pattern cache for future runs
    ├── baseline.onnx                         # Unquantized baseline
@@ -80,8 +86,8 @@ For programmatic control, use the workflow function:
        init_benchmark_instance
    )
 
-   # When using the workflow from Python, the CLI normally calls init_benchmark_instance
-   # for you. If you run the workflow directly, call it first:
+   # When using the CLI, the benchmark is initialized automatically. When calling the
+   # workflow from Python, call init_benchmark_instance first:
    init_benchmark_instance(
        use_trtexec=False,
        timing_cache_file="timing.cache",
@@ -108,7 +114,7 @@ The autotuner uses a pattern-based approach that makes optimization both efficie
 
 2. **Pattern Identification Phase**
    
-   Regions with identical structural patterns are grouped together. For example, all Convolution->BatchNormalization->ReLU blocks in your model will share the same pattern.
+   Regions with identical structural patterns are grouped together. For example, all Convolution->BatchNormalization->ReLU blocks in the model share the same pattern.
 
 3. **Scheme Generation Phase**
    
@@ -130,9 +136,9 @@ The autotuner uses a pattern-based approach that makes optimization both efficie
    
    The final model includes the best Q/DQ scheme for each pattern, resulting in an optimized quantized model.
 
-**Why Pattern-Based?**
+**Why pattern-based?**
 
-Pattern-based optimization significantly reduces the search space. Instead of optimizing each region independently (which could require thousands of benchmarks), the autotuner optimizes each unique pattern once. The time reduction depends on pattern overlap—models with many regions sharing few patterns (like transformers with repeated blocks) see the greatest speedup, while models with mostly unique patterns see less benefit.
+The autotuner optimizes each unique pattern once; the chosen scheme then applies to every region that matches that pattern. So runtime scales with the number of *patterns*, not regions. Models with repeated structure (e.g. transformers) benefit most; highly diverse graphs have more patterns and take longer.
 
 Advanced Usage
 ==============
@@ -140,7 +146,7 @@ Advanced Usage
 Warm-Start with Pattern Cache
 ------------------------------
 
-Pattern cache files store the best Q/DQ schemes from previous optimization runs. You can reuse these patterns on similar models or model versions:
+Pattern cache files store the best Q/DQ schemes from previous optimization runs. These patterns can be reused on similar models or model versions:
 
 .. code-block:: bash
 
@@ -157,18 +163,18 @@ Pattern cache files store the best Q/DQ schemes from previous optimization runs.
        --output_dir ./run2 \
        --pattern_cache ./run1/autotuner_state_pattern_cache.yaml
 
-By prioritizing cached schemes, the second test run has the potential to discover optimal configurations much more quickly.
+The second run tests cached schemes first and can reach a good configuration faster.
 
 **When to use pattern cache:**
 
-* You're optimizing multiple versions of the same model
-* You're optimizing models from the same family (e.g., different BERT variants)
-* You want to transfer learned patterns across models
+* Optimizing multiple versions of the same model
+* Optimizing models from the same family (e.g., different BERT variants)
+* Transferring learned patterns across models
 
 Import Patterns from Existing QDQ Models
 -----------------------------------------
 
-If you have a pre-quantized baseline model (e.g., from manual optimization or another tool), you can import its Q/DQ patterns:
+With a pre-quantized baseline model (e.g., from manual optimization or another tool), its Q/DQ patterns can be imported:
 
 .. code-block:: bash
 
@@ -177,13 +183,7 @@ If you have a pre-quantized baseline model (e.g., from manual optimization or an
        --output_dir ./results \
        --qdq_baseline manually_quantized.onnx
 
-The autotuner will:
-
-1. Extract Q/DQ insertion points from the baseline model
-2. Map these points to region patterns
-3. Use them as seed schemes during optimization
-
-This is useful for:
+The workflow extracts Q/DQ insertion points from the baseline, maps them to region patterns, and uses them as seed schemes. Useful when:
 
 * Starting from expert-tuned quantization schemes
 * Comparing against reference implementations
@@ -192,7 +192,7 @@ This is useful for:
 Resume After Interruption
 --------------------------
 
-Long optimizations can be interrupted (Ctrl+C, cluster preemption, crashes) and automatically resumed:
+A long run can be interrupted (Ctrl+C, preemption, or crash) and resumed later:
 
 .. code-block:: bash
 
@@ -208,16 +208,12 @@ Long optimizations can be interrupted (Ctrl+C, cluster preemption, crashes) and 
        --onnx_path model.onnx \
        --output_dir ./results
 
-The autotuner automatically:
-
-* Detects the state file (``autotuner_state.yaml``)
-* Loads all previous measurements and best schemes
-* Continues from the next unprofiled region
+When rerun with the same ``--output_dir``, the autotuner detects ``autotuner_state.yaml``, restores progress, and continues from the next unprofiled region.
 
 Custom TensorRT Plugins
 -----------------------
 
-If your model uses custom TensorRT operations, provide the plugin libraries:
+If the model uses custom TensorRT operations, provide the plugin libraries:
 
 .. code-block:: bash
 
@@ -350,14 +346,14 @@ Create and use pattern caches:
    autotuner.initialize(config, pattern_cache=cache)
 
    # After optimization, pattern cache is automatically saved
-   # when you call save_state()
+   # when save_state() is called
    autotuner.save_state("autotuner_state.yaml")
    # This also saves: autotuner_state_pattern_cache.yaml
 
-Import from QDQ Baseline
--------------------------
+Import from a Q/DQ Baseline
+--------------------------
 
-Extract patterns from pre-quantized models:
+To seed the autotuner from a pre-quantized model (e.g. from another tool or manual tuning), extract quantized tensor names and pass them in:
 
 .. code-block:: python
 
@@ -447,11 +443,13 @@ Choosing Scheme Count
 
 The ``--schemes_per_region`` parameter controls exploration depth:
 
-* **30-50 schemes**: Fast exploration, good for quick experiments
-* **50-100 schemes**: Balanced (recommended for most cases)
-* **100-200+ schemes**: Thorough exploration, use with pattern cache
+* **15–30 schemes**: Quick exploration; good for trying the tool or small models
+* **30–50 schemes**: Balanced; recommended for most cases
+* **50–100+ schemes**: Deeper search; consider using a pattern cache to avoid re-exploring
 
-For models with many small regions, start with fewer schemes. For models with many big regions, start with more schemes.
+Use fewer schemes when there are many small regions or limited time; use more for large or critical regions.
+
+.. _managing-optimization-time:
 
 Managing Optimization Time
 --------------------------
@@ -467,7 +465,7 @@ Optimization time depends on:
 Total time ≈ (m unique patterns) × (n schemes per region) × (t seconds per benchmark) + baseline measurement
 
 Where:
-- **m** = number of unique region patterns in your model
+- **m** = number of unique region patterns in the model
 - **n** = schemes per region (e.g., 30)
 - **t** = average benchmark time (typically 3-10 seconds, depends on model size)
 
@@ -481,22 +479,14 @@ Assuming t = 5 seconds per benchmark:
 
 Note: Actual benchmark times may depend on TensorRT engine build complexity and GPU hardware.
 
-**Strategies to reduce time:**
+**Ways to reduce time:** Use a pattern cache from a similar model (warm-start), use fewer schemes per region for initial runs, or rely on checkpoint/resume to split work across sessions.
 
-1. Use pattern cache from similar models (warm-start)
-2. Reduce schemes per region for initial exploration
-3. Use crash recovery to split optimization across sessions
+Using the Pattern Cache Effectively
+-----------------------------------
 
-Using Pattern Cache Effectively
---------------------------------
+The pattern cache helps most when models share structure (e.g. BERT → RoBERTa), when iterating on the same model (v1 → v2), or when optimizing a family of models.
 
-Pattern cache is most effective when:
-
-* Models share architectural patterns (e.g., BERT → RoBERTa)
-* You're iterating on the same model (v1 → v2 → v3)
-* You're optimizing a model family
-
-**Building a pattern library:**
+**Example: building a pattern library**
 
 .. code-block:: bash
 
@@ -527,9 +517,7 @@ The autotuner reports speedup ratios:
    Baseline: 12.50 ms
    Final: 9.80 ms (1.276x speedup)
 
-**What does the speedup ratio mean:**
-
-The speedup ratio is the ratio of the baseline latency to the final latency. It means the final latency is 1.276x faster than the baseline latency.
+**What the speedup ratio means:** Baseline ÷ final latency (e.g. 1.276x = final is about 22% faster than baseline).
 
 **If speedup is low (<1.1x):**
 
@@ -541,9 +529,9 @@ The speedup ratio is the ratio of the baseline latency to the final latency. It 
 Deploying Optimized Models
 ===========================
 
-The optimized ONNX model contains Q/DQ nodes and is ready for TensorRT deployment:
+The optimized ONNX model includes Q/DQ nodes and can be used with TensorRT as follows.
 
-Using trtexec
+Using Trtexec
 -------------
 
 .. code-block:: bash
@@ -582,6 +570,8 @@ Using TensorRT Python API
    # Build engine
    config = builder.create_builder_config()
    engine = builder.build_serialized_network(network, config)
+   if engine is None:
+       raise RuntimeError("TensorRT engine build failed")
 
    # Save engine
    with open("model.engine", "wb") as f:
@@ -650,9 +640,9 @@ The model may not benefit from quantization:
 
 **Issue: Resume doesn't work after interruption**
 
-* Ensure output directory is the same
-* Check that ``autotuner_state.yaml`` exists
-* If corrupted, delete state file and restart
+* Use the same ``--output_dir`` (and ``--onnx_path``) as the original run
+* Confirm ``autotuner_state.yaml`` exists in that directory
+* If the state file is corrupted, remove it and start over
 
 Debugging
 ---------
@@ -665,24 +655,24 @@ Enable verbose logging to see detailed information:
        --onnx_path model.onnx \
        --verbose
 
-Check TensorRT build logs for each scheme:
+Check TensorRT build logs for each scheme (under the output directory, default ``./autotuner_output``):
 
 .. code-block:: bash
 
-   # Logs are saved per scheme
-   ls ./output/logs/
+   # Logs are saved per scheme (replace autotuner_output with your --output_dir if different)
+   ls ./autotuner_output/logs/
    # baseline.log
    # region_0_scheme_0.log
    # region_0_scheme_1.log
    # ...
 
    # View a specific log
-   cat ./output/logs/region_0_scheme_0.log
+   cat ./autotuner_output/logs/region_0_scheme_0.log
 
 Inspect Region Discovery
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-To understand how the autotuner partitions your model into regions, use the region inspection tool:
+To understand how the autotuner partitions the model into regions, use the region inspection tool:
 
 .. code-block:: bash
 
@@ -700,7 +690,7 @@ To understand how the autotuner partitions your model into regions, use the regi
 
 **What this tool shows:**
 
-* **Region hierarchy**: How your model is partitioned into LEAF and COMPOSITE regions
+* **Region hierarchy**: How the model is partitioned into LEAF and COMPOSITE regions
 * **Region types**: Convergence patterns (divergence→branches→convergence) vs sequences
 * **Node counts**: Number of operations in each region
 * **Input/output tensors**: Data flow boundaries for each region
@@ -734,41 +724,119 @@ To understand how the autotuner partitions your model into regions, use the regi
    │    │  ├─ Nodes: Conv, BatchNormalization, Relu
    │    ...
 
-This helps you understand:
+Use this to see how many unique patterns to expect (more patterns → longer optimization), whether region sizes need tuning (e.g. ``--max-sequence-size`` in region_inspect), and where branches or skip connections appear.
 
-* **Number of patterns**: More regions = more unique patterns = longer optimization
-* **Region sizes**: Very large regions might need adjustment via ``--max-sequence-size`` (region_inspect)
-* **Model structure**: Identifies divergent/convergent patterns (skip connections, branches)
+Architecture and Workflow
+=========================
 
-API Reference
-=============
+The autotuner partitions the ONNX graph into regions, groups regions by structural pattern, and for each pattern tests multiple Q/DQ insertion schemes via TensorRT benchmarking. The following diagram summarizes the end-to-end process:
 
-For detailed API documentation, see :doc:`../reference/2_qdq_placement`.
+.. code-block:: text
 
-Key Classes:
+   ┌─────────────────────────────────────────────────────────────┐
+   │ 1. Model Loading & Initialization                           │
+   │    • Load ONNX model                                        │
+   │    • Create QDQAutotuner instance                           │
+   │    • Run automatic region discovery                         │
+   │    • Load pattern cache (warm-start)                        │
+   │    • Import patterns from QDQ baseline (optional)           │
+   └────────────────────┬────────────────────────────────────────┘
+                        │
+                        ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │ 2. Baseline Measurement                                     │
+   │    • Export model without Q/DQ nodes                        │
+   │    • Build TensorRT engine                                  │
+   │    • Measure baseline latency                               │
+   └────────────────────┬────────────────────────────────────────┘
+                        │
+                        ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │ 3. Pattern-Based Region Profiling                           │
+   │    For each region: set profile region, generate schemes,   │
+   │    benchmark each scheme, commit best, save state           │
+   └────────────────────┬────────────────────────────────────────┘
+                        │
+                        ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │ 4. Finalization                                             │
+   │    • Export optimized model with all best schemes           │
+   │    • Save state and pattern cache                           │
+   └─────────────────────────────────────────────────────────────┘
 
-* :class:`~modelopt.onnx.quantization.autotune.QDQAutotuner` - Main autotuner with automatic region discovery
-* :class:`~modelopt.onnx.quantization.autotune.Config` - Configuration parameters
-* :class:`~modelopt.onnx.quantization.autotune.PatternCache` - Pattern cache for warm-start
-* :class:`~modelopt.onnx.quantization.autotune.Region` - Hierarchical subgraph representation
-* :class:`~modelopt.onnx.quantization.autotune.InsertionScheme` - Q/DQ insertion point collection
+Design Rationale
+----------------
 
-Key Functions:
+* **Pattern-based**: One optimization per pattern; the chosen scheme applies to every matching region, reducing work and keeping behavior consistent.
+* **Hierarchical regions**: LEAF (single ops or short sequences) and COMPOSITE (nested subgraphs) allow tuning at different granularities.
+* **Incremental state**: Progress is saved after each region so runs can be resumed after interruption.
 
-* :func:`~modelopt.onnx.quantization.autotune.workflows.region_pattern_autotuning_workflow` - Complete optimization workflow
-* :func:`~modelopt.onnx.quantization.autotune.workflows.init_benchmark_instance` - Initialize global TensorRT benchmark (call before benchmark_onnx_model when using workflow from Python)
-* :func:`~modelopt.onnx.quantization.autotune.workflows.benchmark_onnx_model` - Benchmark ONNX model with TensorRT
+Limitations and Future Work
+============================
+
+**Current limitations:**
+
+* Random scheme sampling may miss optimal configurations; number of schemes per region is fixed.
+* Structural similarity is assumed to imply similar performance; context (input/output) can vary.
+* Uniform quantization per scheme (no mixed-precision within a scheme).
+* TensorRT engine build time dominates; each scheme requires a full engine build.
+* Performance is measured with default/dummy inputs and may not generalize to all distributions.
+
+**Possible future enhancements:**
+
+* Advanced search (e.g. Bayesian optimization, evolutionary algorithms).
+* Mixed-precision and per-layer bit-width.
+* Accuracy constraints and multi-objective (latency + accuracy) optimization.
+
+Glossary
+========
+
+.. glossary::
+
+   Q/DQ Nodes
+      QuantizeLinear (Q) and DequantizeLinear (DQ) nodes in ONNX that convert between
+      floating-point and quantized integer representations.
+
+   Region
+      A hierarchical subgraph in an ONNX computation graph with well-defined input and
+      output boundaries. Can be LEAF (atomic), COMPOSITE (containing child regions), or ROOT.
+
+   Pattern
+      A structural signature of a region. Regions with identical patterns can share insertion schemes.
+
+   Insertion Scheme
+      A collection of insertion points specifying where to insert Q/DQ nodes within a region.
+      Schemes use pattern-relative addressing for portability.
+
+   Pattern Cache
+      Collection of top-performing insertion schemes for multiple patterns, used to
+      warm-start optimization on similar models.
+
+   Baseline Latency
+      Inference latency of the model without any Q/DQ nodes, used as reference for speedup.
+
+   TensorRT Timing Cache
+      Persistent cache of kernel performance measurements used by TensorRT to speed up engine builds.
+
+References
+==========
+
+* **ONNX**: https://onnx.ai/
+* **ONNX Technical Details**: https://onnx.ai/onnx/technical/index.html
+* **TensorRT Documentation**: https://docs.nvidia.com/deeplearning/tensorrt/
+* **NVIDIA Model Optimizer (ModelOpt)**: https://github.com/NVIDIA/Model-Optimizer
+* **ONNX GraphSurgeon**: https://github.com/NVIDIA/TensorRT/tree/main/tools/onnx-graphsurgeon
 
 Frequently Asked Questions
 ==========================
 
 **Q: How long does optimization take?**
 
-A: Optimization time is: (unique patterns) × (schemes per region) × (benchmark time). For example, with 30 schemes/region and 5 seconds/benchmark: 10 patterns = 25 minutes, 50 patterns = 2.1 hours, 100 patterns = 4.2 hours. The number of unique patterns depends on your model's architectural diversity—models with repeated structures (like transformers) have fewer unique patterns. Use pattern cache to significantly reduce time for similar models.
+A: Time ≈ (unique patterns) × (schemes per region) × (time per benchmark). See :ref:`managing-optimization-time` for a formula and examples. Use a pattern cache when re-running on similar models to reduce time.
 
 **Q: Can I stop optimization early?**
 
-A: Yes! Press Ctrl+C to interrupt. The progress is saved and you can resume later.
+A: Yes. Press Ctrl+C to interrupt. Progress is saved and the run can be resumed later.
 
 **Q: Do I need calibration data?**
 
@@ -776,7 +844,7 @@ A: No, the autotuner focuses on Q/DQ placement optimization, not calibration. Ca
 
 **Q: Can I use this with PyTorch models?**
 
-A: Export your PyTorch model to ONNX first using ``torch.onnx.export()``, then run the autotuner on the ONNX model.
+A: Export the PyTorch model to ONNX first using ``torch.onnx.export()``, then run the autotuner on the ONNX model.
 
 **Q: What's the difference from modelopt.onnx.quantization.quantize()?**
 
@@ -784,7 +852,7 @@ A: ``quantize()`` is a fast PTQ tool that uses heuristics for Q/DQ placement. Th
 
 **Q: Can I customize region discovery?**
 
-A: Yes, inherit from ``QDQAutotunerBase`` and provide your own regions instead of using automatic discovery:
+A: Yes. Subclass ``QDQAutotunerBase`` and supply custom regions instead of using automatic discovery:
 
 .. code-block:: python
 
@@ -793,11 +861,11 @@ A: Yes, inherit from ``QDQAutotunerBase`` and provide your own regions instead o
    class CustomAutotuner(QDQAutotunerBase):
        def __init__(self, model, custom_regions):
            super().__init__(model)
-           self.regions = custom_regions  # Your custom regions
+           self.regions = custom_regions  # Custom regions
 
 **Q: Does this work with dynamic shapes?**
 
-A: The autotuner uses TensorRT for benchmarking, which requires fixed shapes. Set fixed input shapes in your ONNX model before optimization.
+A: The autotuner uses TensorRT for benchmarking, which requires fixed shapes. Set fixed input shapes in the ONNX model before optimization.
 
 **Q: Can I optimize for accuracy instead of latency?**
 
@@ -842,7 +910,7 @@ Example 3: Import from Manual Baseline
 
 .. code-block:: bash
 
-   # You have a manually quantized baseline
+   # With a manually quantized baseline
    # Import its patterns as starting point
    python -m modelopt.onnx.quantization.autotune \
        --onnx_path model.onnx \
@@ -868,18 +936,11 @@ Example 4: Full Python Workflow
        timing_runs=20
    )
    
-   # Run optimization
+   # Run optimization (only non-defaults shown; see API for all options)
    autotuner = region_pattern_autotuning_workflow(
        model_path="model.onnx",
        output_dir=Path("./results"),
        num_schemes_per_region=30,
-       pattern_cache_file=None,
-       state_file=None,
-       quant_type="int8",
-       default_dq_dtype="float32",
-       qdq_baseline_model=None,
-       node_filter_list=None,
-       verbose=False,
    )
    
    # Access results
@@ -896,11 +957,4 @@ Conclusion
 
 The ``modelopt.onnx.quantization.autotune`` module provides a powerful automated approach to Q/DQ placement optimization. By combining automatic region discovery, pattern-based optimization, and TensorRT performance measurement, it finds optimal quantization strategies without manual tuning.
 
-**Next Steps:**
-
-* Try the quick start example on your model
-* Experiment with different ``--schemes_per_region`` values
-* Build a pattern cache library for your model family
-* Integrate optimized models into your deployment pipeline
-
-For architectural details and API reference, see :doc:`../reference/2_qdq_placement`.
+**Next steps:** Run the quick start on a model, try different ``--schemes_per_region`` values, build a pattern cache for the model family, then integrate the optimized model into the deployment pipeline.
