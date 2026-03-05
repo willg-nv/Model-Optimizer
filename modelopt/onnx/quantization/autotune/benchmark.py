@@ -534,13 +534,22 @@ class TensorRTPyBenchmark(Benchmark):
             (host_ptr, arr, err): On success err is cudaSuccess; on failure host_ptr/arr
             may be None and err is the CUDA error code.
         """
-        nbytes = size * np.dtype(dtype).itemsize
+        dtype = np.dtype(dtype)
+        nbytes = size * dtype.itemsize
         err, host_ptr = cudart.cudaMallocHost(nbytes)
         if err != cudart.cudaError_t.cudaSuccess:
             return (None, None, err)
         addr = int(host_ptr) if hasattr(host_ptr, "__int__") else host_ptr
-        ctype = np.ctypeslib.as_ctypes_type(dtype)
-        arr = np.ctypeslib.as_array((ctype * size).from_address(addr))
+        try:
+            ctype = np.ctypeslib.as_ctypes_type(dtype)
+            arr = np.ctypeslib.as_array((ctype * size).from_address(addr))
+        except NotImplementedError:
+            # float16/bfloat16 have no ctypes equivalent; use same-size type and view
+            if dtype.itemsize == 2:
+                ctype = ctypes.c_uint16
+            else:
+                raise
+            arr = np.ctypeslib.as_array((ctype * size).from_address(addr)).view(dtype)
         return (host_ptr, arr, cudart.cudaError_t.cudaSuccess)
 
     @staticmethod
