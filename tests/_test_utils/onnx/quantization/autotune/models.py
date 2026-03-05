@@ -32,7 +32,12 @@ def _create_simple_conv_onnx_model():
         "output", onnx.TensorProto.FLOAT, [64, 64, 224, 224]
     )
     conv_node = helper.make_node(
-        "Conv", inputs=["input", "conv_weight"], outputs=["conv_out"], name="conv"
+        "Conv",
+        inputs=["input", "conv_weight"],
+        outputs=["conv_out"],
+        name="conv",
+        kernel_shape=[3, 3],
+        pads=[1, 1, 1, 1],
     )
     relu_node = helper.make_node("Relu", inputs=["conv_out"], outputs=["output"], name="relu")
     graph = helper.make_graph(

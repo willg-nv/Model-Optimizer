@@ -27,12 +27,12 @@ from modelopt.onnx.quantization.autotune.workflows import (
 )
 
 DEFAULT_OUTPUT_DIR = "./autotuner_output"
-DEFAULT_NUM_SCHEMES = 30
+DEFAULT_NUM_SCHEMES = 50
 DEFAULT_QUANT_TYPE = "int8"
 DEFAULT_DQ_DTYPE = "float32"
 DEFAULT_TIMING_CACHE = str(Path(tempfile.gettempdir()) / "trtexec_timing.cache")
-DEFAULT_WARMUP_RUNS = 5
-DEFAULT_TIMING_RUNS = 20
+DEFAULT_WARMUP_RUNS = 50
+DEFAULT_TIMING_RUNS = 100
 MODE_PRESETS = {
     "quick": {"schemes_per_region": 30, "warmup_runs": 10, "timing_runs": 50},
     "default": {"schemes_per_region": 50, "warmup_runs": 50, "timing_runs": 100},
@@ -135,6 +135,8 @@ def run_autotune() -> int:
 
     log_benchmark_config(args)
     trtexec_args = getattr(args, "trtexec_benchmark_args", None)
+    if trtexec_args and isinstance(trtexec_args, str):
+        trtexec_args = trtexec_args.split()
     benchmark_instance = init_benchmark_instance(
         use_trtexec=args.use_trtexec,
         plugin_libraries=args.plugin_libraries,
@@ -258,7 +260,7 @@ Examples:
         dest="num_schemes",
         action=_StoreWithExplicitFlag,
         explicit_attr="_explicit_num_schemes",
-        help=f"Number of schemes to test per region (default: {DEFAULT_NUM_SCHEMES}; overridden by --mode)",
+        help=f"Schemes per region (default: {DEFAULT_NUM_SCHEMES}; preset from --mode if not set)",
     )
     strategy_group.add_argument(
         "--pattern_cache",
@@ -324,7 +326,7 @@ Examples:
         default=DEFAULT_WARMUP_RUNS,
         action=_StoreWithExplicitFlag,
         explicit_attr="_explicit_warmup_runs",
-        help=f"Number of warmup runs (default: {DEFAULT_WARMUP_RUNS}; overridden by --mode)",
+        help=f"Number of warmup runs (default: {DEFAULT_WARMUP_RUNS}; preset from --mode applies if not set)",
     )
     trt_group.add_argument(
         "--timing_runs",
@@ -332,7 +334,7 @@ Examples:
         default=DEFAULT_TIMING_RUNS,
         action=_StoreWithExplicitFlag,
         explicit_attr="_explicit_timing_runs",
-        help=f"Number of timing runs (default: {DEFAULT_TIMING_RUNS}; overridden by --mode)",
+        help=f"Number of timing runs (default: {DEFAULT_TIMING_RUNS}; preset from --mode applies if not set)",
     )
     trt_group.add_argument(
         "--plugin_libraries",
