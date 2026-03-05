@@ -1,5 +1,5 @@
 ===============================================
-Automated Q/DQ Placement Optimization
+Automated Q/DQ Placement Optimization (ONNX)
 ===============================================
 
 .. contents:: Table of Contents
@@ -577,6 +577,7 @@ Possible causes:
 * TensorRT cannot parse the ONNX model
 * Model contains unsupported operations
 * Missing custom plugin libraries
+* cuda-python package not installed when using TensorRTPyBenchmark
 
 .. code-block:: bash
 

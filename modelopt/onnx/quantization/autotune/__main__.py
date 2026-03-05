@@ -158,10 +158,10 @@ def run_autotune() -> int:
 
 def get_parser() -> argparse.ArgumentParser:
     """Return the autotune CLI argument parser (for Sphinx and programmatic use)."""
-    return _get_autotune_parser()
+    return _get_parser()
 
 
-def _get_autotune_parser() -> argparse.ArgumentParser:
+def _get_parser() -> argparse.ArgumentParser:
     """Create and configure the command-line argument parser."""
     parser = argparse.ArgumentParser(
         prog="modelopt.onnx.quantization.autotune",
