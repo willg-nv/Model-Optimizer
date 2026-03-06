@@ -350,7 +350,7 @@ Create and use pattern caches:
    # This also saves: autotuner_state_pattern_cache.yaml
 
 Import from a Q/DQ Baseline
---------------------------
+---------------------------
 
 To seed the autotuner from a pre-quantized model (e.g. from another tool or manual tuning), extract quantized tensor names and pass them in:
 
