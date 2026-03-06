@@ -543,12 +543,15 @@ class TensorRTPyBenchmark(Benchmark):
         try:
             ctype = np.ctypeslib.as_ctypes_type(dtype)
             arr = np.ctypeslib.as_array((ctype * size).from_address(addr))
-        except NotImplementedError:
+        except NotImplementedError as e:
             # float16/bfloat16 have no ctypes equivalent; use same-size type and view
             if dtype.itemsize == 2:
                 ctype = ctypes.c_uint16
             else:
-                raise
+                raise TypeError(
+                    f"Pinned host allocation for dtype {dtype} is not supported: "
+                    "no ctypes mapping and no fallback for this itemsize"
+                ) from e
             arr = np.ctypeslib.as_array((ctype * size).from_address(addr)).view(dtype)
         return (host_ptr, arr, cudart.cudaError_t.cudaSuccess)
 
