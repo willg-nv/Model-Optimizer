@@ -410,6 +410,8 @@ Arguments use underscores. Short options: ``-m`` (onnx_path), ``-o`` (output_dir
    :module: modelopt.onnx.quantization.autotune.__main__
    :func: get_parser
    :prog: python -m modelopt.onnx.quantization.autotune
+   :nodescription:
+   :noepilog:
 
 Best Practices
 ==============
